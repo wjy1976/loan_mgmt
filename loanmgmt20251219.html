@@ -478,6 +478,7 @@
             }).filter(item => item.date !== null);
         };
 
+        // ========== 修正點1: 外在本金計算公式 ==========
         const calculateDerivedData = (record) => {
             const loanAmount = Number(record.loanAmount) || 0; 
             const disbursed = Number(record.disbursed) || 0;
@@ -493,7 +494,7 @@
 
             if (record.status === '4') {
                 return {
-                    outstanding: record.outstandingPrincipal !== undefined ? Number(record.outstandingPrincipal) : (disbursed - (totalPrincipalPaid + totalInterestPaid)),
+                    outstanding: record.outstandingPrincipal !== undefined ? Number(record.outstandingPrincipal) : (disbursed - totalPrincipalPaid - totalInterestPaid),
                     arrears: record.arrears !== undefined ? Number(record.arrears) : (loanAmount - totalPrincipalPaid - totalInterestPaid),
                     remainingTerms: '-', 
                     roiTerms: '-',
@@ -504,8 +505,8 @@
 
             if (record.status === '0' || record.status === '2') {
                 return { 
-                    outstanding: record.status === '0' ? 0 : (disbursed - totalPrincipalPaid), 
-                    arrears: record.status === '0' ? 0 : (loanAmount - totalPrincipalPaid),
+                    outstanding: 0, // 狀態0和2的外在本金為0
+                    arrears: record.status === '0' ? 0 : (loanAmount - totalPrincipalPaid - totalInterestPaid),
                     remainingTerms: '-', 
                     roiTerms: '-',
                     totalPrincipalPaid,
@@ -513,31 +514,41 @@
                 };
             }
 
-            let outstanding = disbursed - totalPrincipalPaid; 
+            // 狀態1和3的外在本金計算：放款金額 - 累計已還本金 - 累計已還利息
+            let outstanding = disbursed - totalPrincipalPaid - totalInterestPaid; 
             if (outstanding < 0) outstanding = 0; 
 
-            let arrears = loanAmount - totalPrincipalPaid; 
+            let arrears = loanAmount - totalPrincipalPaid - totalInterestPaid; 
 
-            let remainingTerms = '-'; let roiTerms = "-";
-            const method = record.method || ''; const isSpecialMethod = ['設定', '票貼', '小額'].includes(method);
+            let remainingTerms = '-'; 
+            let roiTerms = "-";
+            const method = record.method || ''; 
+            const isSpecialMethod = ['設定', '票貼', '小額'].includes(method);
+            
             if (!isSpecialMethod) {
                 const terms = Number(record.terms) || 0; 
                 const repaidTerms = entries.length;
-                let val = terms - repaidTerms; if (val < 0) val = 0; remainingTerms = Math.floor(val); 
+                let val = terms - repaidTerms; 
+                if (val < 0) val = 0; 
+                remainingTerms = Math.floor(val); 
                 
                 const termPrincipal = Number(record.principalPerTerm) || 0; 
                 const termInterest = Number(record.interestPerTerm) || 0; 
                 const termTotal = termPrincipal + termInterest;
                 
-                if (record.status === '3') roiTerms = "∞"; 
-                else if (record.status === '1') { 
+                if (record.status === '3') {
+                    roiTerms = "∞"; 
+                } else if (record.status === '1') { 
                     if (termTotal > 0 && outstanding > 0) { 
                         let val = outstanding / termTotal; 
                         if (val < 0) val = 0; 
                         roiTerms = Math.ceil(val);
-                    } else if (outstanding <= 0) roiTerms = "0"; 
+                    } else if (outstanding <= 0) {
+                        roiTerms = "0"; 
+                    }
                 }
             }
+            
             return { outstanding, arrears, remainingTerms, roiTerms, totalPrincipalPaid, totalInterestPaid };
         };
         
@@ -582,7 +593,6 @@
             }
         };
 
-        // 修改點2: 更新搜尋邏輯只搜尋借款人和編號
         const calculateStats = () => {
             const s = { 
                 totalIncome: 0, creditAmount: 0, outstanding: 0, 
@@ -1586,6 +1596,14 @@
                  r.displayId?.toLowerCase().includes(searchTerm))
             );
             
+            // ========== 修正點2: 案件列表排序 ==========
+            // 按照放款日期排序（從舊到新）
+            filtered.sort((a, b) => {
+                const dateA = new Date(a.date || '9999-12-31');
+                const dateB = new Date(b.date || '9999-12-31');
+                return dateA - dateB; // 升序排序
+            });
+            
             // 套用未繳篩選
             if (state.unpaidFilter === 'all_unpaid') {
                 filtered = filtered.filter(r => {
@@ -1690,7 +1708,7 @@
             }).join('');
         };
 
-        // 修改 refreshListUI 函數
+        // ========== 修正點2: 修改 refreshListUI 函數 ==========
         window.refreshListUI = () => {
             const tbody = document.getElementById('loanListBody');
             const mobileContainer = document.getElementById('mobileListContainer');
@@ -1717,6 +1735,14 @@
                      r.displayId?.toLowerCase().includes(searchTerm))
                 );
                 
+                // ========== 修正：按照放款日期排序 ==========
+                filtered.sort((a, b) => {
+                    const dateA = new Date(a.date || '9999-12-31');
+                    const dateB = new Date(b.date || '9999-12-31');
+                    return dateA - dateB; // 升序排序
+                });
+                
+                // 套用未繳篩選（在排序之後）
                 if (state.unpaidFilter === 'all_unpaid') {
                     filtered = filtered.filter(r => {
                         const { isPaid } = getPaymentStatus(r);
@@ -1827,6 +1853,13 @@
                     (r.borrower?.toLowerCase().includes(searchTerm) || 
                      r.displayId?.toLowerCase().includes(searchTerm))
                 );
+                
+                // ========== 修正：按照放款日期排序 ==========
+                filtered.sort((a, b) => {
+                    const dateA = new Date(a.date || '9999-12-31');
+                    const dateB = new Date(b.date || '9999-12-31');
+                    return dateA - dateB; // 升序排序
+                });
                 
                 // 套用未繳篩選
                 if (state.unpaidFilter === 'all_unpaid') {
