@@ -235,7 +235,7 @@
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
-        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut, updateProfile } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
+        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut, updateProfile, setPersistence, browserSessionPersistence } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
         import { getFirestore, collection, addDoc, onSnapshot, query, doc, deleteDoc, updateDoc, serverTimestamp, writeBatch, orderBy, getDoc, setDoc, where, getDocs, limit } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
 
         // --- Custom Alert/Confirm Logic ---
@@ -303,6 +303,15 @@
             app = initializeApp(firebaseConfig);
             auth = getAuth(app);
             db = getFirestore(app);
+            
+            // 設定登入狀態為session，關閉瀏覽器即清除
+            try {
+                await setPersistence(auth, browserSessionPersistence);
+                console.log("Persistence設定為session");
+            } catch (e) {
+                console.error("設定persistence失敗:", e);
+            }
+            
             firebaseAvailable = true;
             console.log("Firebase initialized successfully");
         } catch (e) {
@@ -354,7 +363,7 @@
         const listStickyOffsets = [0, 120, 200, 300, 380];
 
         const state = {
-            currentUser: firebaseAvailable ? null : 'Guest', 
+            currentUser: null, // 修正：初始化為null，強制登入
             currentUserUid: null,
             currentUserName: 'Guest', 
             isAdmin: false, // 權限標記
@@ -873,6 +882,11 @@
             if (authPassword) authPassword.value = '';
             if (authEmail) authEmail.value = '';
             if (authConfirmPassword) authConfirmPassword.value = '';
+            
+            // 清除sessionStorage中的登入快取
+            if (typeof sessionStorage !== 'undefined') {
+                sessionStorage.removeItem('firebase:authUser:' + firebaseConfig.apiKey + ':' + appId);
+            }
             
             // 顯示登出成功訊息
             window.showSuccess("已成功登出系統");
@@ -1444,8 +1458,8 @@
             const verticalFields = [
                 '狀態', '方式', '日期', '借款人', '工作', '借款', '放款', '利息',
                 '銀行/人', '期數', '每期還款日期', '每期還款本金', '利息', '還款期數',
-                '利息收入', '欠款', '在外本金', '餘期', '回本餘期', '利息收入',
-                '本月實收款', '本月實收息', '附註', '還款日期'
+                '利息收入', '欠款', '在外本金', '餘期', '回本餘期', '本月實收款', 
+                '本月實收息', '附註', '還款日程'
             ];
             
             // 建立垂直格式的 CSV
@@ -1496,7 +1510,7 @@
                         case '每期還款本金':
                             value = formatNumber(record.principalPerTerm || 0);
                             break;
-                        case '利息':
+                        case '利息': // 每期利息
                             value = formatNumber(record.interestPerTerm || 0);
                             break;
                         case '還款期數':
@@ -1517,9 +1531,6 @@
                         case '回本餘期':
                             value = calc.roiTerms || 0;
                             break;
-                        case '利息收入':
-                            value = formatNumber(calc.totalInterestPaid || 0);
-                            break;
                         case '本月實收款':
                             value = formatNumber(calc.totalPrincipalPaid || 0);
                             break;
@@ -1529,11 +1540,14 @@
                         case '附註':
                             value = record.note || '';
                             break;
-                        case '還款日期':
-                            const dates = extractDatesFromSchedule(record.schedule);
-                            if (dates.length > 0) {
-                                dates.sort((a, b) => b.getTime() - a.getTime());
-                                value = dates[0].toISOString().split('T')[0];
+                        case '還款日程': // 新增：完整的還款日程
+                            if (record.schedule) {
+                                // 將還款日程整理成更整潔的格式
+                                const entries = parseSchedule(record.schedule);
+                                value = entries.map(e => {
+                                    const dateStr = e.date ? e.date.toISOString().split('T')[0] : '';
+                                    return `${dateStr} 本金:${e.principal} 利息:${e.interest}`;
+                                }).join(' | '); // 用管道符號分隔不同日期的還款
                             }
                             break;
                         default:
@@ -1581,44 +1595,65 @@
         
         const cleanNumber = (val) => val ? parseFloat(String(val).replace(/,/g, '').replace(/%/g, '').trim()) : 0;
         
-        // CSV 垂直解析函數
+        // CSV 垂直解析函數 - 修正版
         const parseCSV = (text) => {
-            const rows = text.trim().split(/\r\n|\n/).map(row => {
-                let values = [];
+            // 修正：先去除空白行，確保正確解析
+            const rawRows = text.trim().split(/\r\n|\n/).filter(row => row.trim() !== '');
+            
+            // 修正：更穩健的 CSV 解析，處理引號和逗號
+            const rows = rawRows.map(row => {
+                const values = [];
                 let current = '';
                 let inQuotes = false;
+                
                 for (let j = 0; j < row.length; j++) {
                     const char = row[j];
-                    if (char === '"') { inQuotes = !inQuotes; } 
-                    else if (char === ',' && !inQuotes) { values.push(current.trim()); current = ''; } 
-                    else { current += char; }
+                    if (char === '"') {
+                        inQuotes = !inQuotes;
+                    } else if (char === ',' && !inQuotes) {
+                        values.push(current.trim());
+                        current = '';
+                    } else {
+                        current += char;
+                    }
                 }
                 values.push(current.trim());
-                return values;
-            }).filter(values => values.length > 1);
+                return values.map(v => v.replace(/^"(.*)"$/, '$1').replace(/""/g, '"'));
+            });
 
             if (rows.length === 0) return [];
             
             const parsedCases = [];
             const totalCols = rows[0].length;
-            const startingCol = 2; // 數據從 C 欄開始
+            
+            // 修正：數據從第1列開始（索引0是欄位名稱）
+            // 但垂直格式中，第一列（索引0）是欄位名稱，數據從第二列（索引1）開始
+            const startingCol = 1; // 修正：從第1列開始（索引1），而不是第2列
+            
+            console.log(`CSV解析：總列數=${totalCols}, 從第${startingCol}列開始解析`);
 
             for (let col = startingCol; col < totalCols; col++) {
                 const borrowerName = rows[MAP_ROWS.BORROWER]?.[col]?.trim();
                 const loanAmount = cleanNumber(rows[MAP_ROWS.AMOUNT]?.[col]);
                 
-                if (!borrowerName || loanAmount === 0) continue; 
+                // 修正：放寬判斷條件，只要有名稱就解析
+                if (!borrowerName && loanAmount === 0) {
+                    console.log(`跳過第${col}列：無借款人名稱且借款金額為0`);
+                    continue;
+                }
 
                 let status = String(rows[MAP_ROWS.STATUS]?.[col] || '1').trim();
                 const terms = cleanNumber(rows[MAP_ROWS.PERIODS]?.[col]);
                 const interestRateFloat = cleanNumber(rows[MAP_ROWS.INTEREST_RATE]?.[col]) / 100;
 
+                // 狀態轉換
                 if (!['0', '1', '2', '3', '4'].includes(status)) {
-                    if (status.includes('進行')) status = '1';
-                    else if (status.includes('代管')) status = '2';
-                    else if (status.includes('呆帳')) status = '3';
-                    else if (status.includes('結案')) status = '0';
-                    else status = '1'; 
+                    const statusText = status.toLowerCase();
+                    if (statusText.includes('進行') || statusText.includes('正常')) status = '1';
+                    else if (statusText.includes('代管')) status = '2';
+                    else if (statusText.includes('呆帳')) status = '3';
+                    else if (statusText.includes('結案')) status = '0';
+                    else status = '1'; // 預設為進行中
                 }
 
                 let principalPerTerm = 0;
@@ -1630,12 +1665,41 @@
                 const scheduleLines = [];
                 let lastRepaymentDate = '';
 
-                for (let rowIdx = MAP_ROWS.HISTORY_START; rowIdx < rows.length; rowIdx++) {
-                    const historyDateStr = rows[rowIdx]?.[col]?.trim();
-                    if (historyDateStr && /\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(historyDateStr)) {
-                        const cleanDate = historyDateStr.replace(/\//g, '-');
-                        const entry = `${cleanDate} 本金:${principalPerTerm} 利息:${interestPerTerm}`;
-                        scheduleLines.push(entry);
+                // 修正：更靈活的還款日期解析
+                // 檢查是否有"還款日程"欄位
+                const scheduleRowIndex = rows.findIndex(row => row[0]?.includes('還款日程'));
+                if (scheduleRowIndex !== -1 && rows[scheduleRowIndex]?.[col]) {
+                    const scheduleText = rows[scheduleRowIndex][col];
+                    if (scheduleText) {
+                        // 嘗試解析多種格式的還款日程
+                        const scheduleEntries = scheduleText.split('|').map(entry => entry.trim());
+                        scheduleEntries.forEach(entry => {
+                            if (entry) {
+                                // 嘗試提取日期和金額
+                                const dateMatch = entry.match(/(\d{4}[-\/]\d{1,2}[-\/]\d{1,2})/);
+                                const principalMatch = entry.match(/本金[:\s]*(\d+)/);
+                                const interestMatch = entry.match(/利息[:\s]*(\d+)/);
+                                
+                                if (dateMatch) {
+                                    const cleanDate = dateMatch[0].replace(/\//g, '-');
+                                    const principal = principalMatch ? parseInt(principalMatch[1], 10) : principalPerTerm;
+                                    const interest = interestMatch ? parseInt(interestMatch[1], 10) : interestPerTerm;
+                                    scheduleLines.push(`${cleanDate} 本金:${principal} 利息:${interest}`);
+                                }
+                            }
+                        });
+                    }
+                }
+                
+                // 如果沒有找到"還款日程"欄位，嘗試從歷史行解析
+                if (scheduleLines.length === 0) {
+                    for (let rowIdx = MAP_ROWS.HISTORY_START; rowIdx < rows.length; rowIdx++) {
+                        const historyDateStr = rows[rowIdx]?.[col]?.trim();
+                        if (historyDateStr && /\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(historyDateStr)) {
+                            const cleanDate = historyDateStr.replace(/\//g, '-');
+                            const entry = `${cleanDate} 本金:${principalPerTerm} 利息:${interestPerTerm}`;
+                            scheduleLines.push(entry);
+                        }
                     }
                 }
                 
@@ -1653,7 +1717,7 @@
                     status: status,
                     method: rows[MAP_ROWS.CATEGORY]?.[col] || '',
                     date: rows[MAP_ROWS.LOAN_DATE]?.[col] || '',
-                    borrower: borrowerName,
+                    borrower: borrowerName || `未知借款人_${col}`,
                     job: rows[MAP_ROWS.JOB]?.[col] || '',
                     loanAmount: loanAmount,
                     disbursed: cleanNumber(rows[MAP_ROWS.ACTUAL_AMOUNT]?.[col]) || loanAmount,
@@ -1669,10 +1733,18 @@
                     lastRepaymentDate: lastRepaymentDate,
                     createdAt: serverTimestamp(),
                     updatedAt: serverTimestamp(),
-                    note: '', idNumber: '', address: '', telephone: '', mobile: '',
+                    note: rows.find(row => row[0]?.includes('附註'))?.[col] || '',
+                    idNumber: '', 
+                    address: '', 
+                    telephone: '', 
+                    mobile: '',
                 };
+                
+                console.log(`解析第${col}列案件：${newCase.borrower}, 狀態=${newCase.status}, 金額=${newCase.loanAmount}`);
                 parsedCases.push(newCase);
             }
+            
+            console.log(`CSV解析完成：共解析 ${parsedCases.length} 筆案件`);
             return parsedCases;
         };
         
@@ -2744,7 +2816,7 @@
                         state.isLoadingListener = true;
                     }
                 } else {
-                    // 完全重置狀態
+                    // 完全重置狀態，強制顯示登入畫面
                     updateState({ 
                         currentUser: null, 
                         currentUserUid: null,
@@ -2780,9 +2852,16 @@
                     // 清空表單資料
                     formData = { ...initialFormState };
                     
-                    // 清空搜尋輸入框
-                    const searchInput = document.getElementById('searchInput');
-                    if (searchInput) searchInput.value = '';
+                    // 特別注意：清除任何可能存在的登入快取
+                    if (typeof sessionStorage !== 'undefined') {
+                        sessionStorage.removeItem('firebase:authUser:' + firebaseConfig.apiKey + ':' + appId);
+                    }
+                    
+                    // 清除搜尋輸入框
+                    setTimeout(() => {
+                        const searchInput = document.getElementById('searchInput');
+                        if (searchInput) searchInput.value = '';
+                    }, 0);
                     
                     renderApp();
                 }
