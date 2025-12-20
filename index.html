@@ -1454,33 +1454,46 @@
                 return;
             }
 
-            // 定義垂直 CSV 的欄位順序（根據您提供的 CSV 格式）
+            // 分析所有案件的還款日期，找出最大還款次數
+            let maxScheduleEntries = 0;
+            filtered.forEach(record => {
+                const entries = parseSchedule(record.schedule || '');
+                if (entries.length > maxScheduleEntries) {
+                    maxScheduleEntries = entries.length;
+                }
+            });
+            
+            // 定義垂直 CSV 的欄位順序
             const verticalFields = [
-                '狀態', '方式', '日期', '借款人', '工作', '借款', '放款', '利息',
-                '銀行/人', '期數', '每期還款日期', '每期還款本金', '利息', '還款期數',
-                '利息收入', '欠款', '在外本金', '餘期', '回本餘期', '本月實收款', 
-                '本月實收息', '附註', '還款日程'
+                '編號', '狀態', '方式', '放款日期', '借款人', '工作', 
+                '借款金額', '放款金額', '利率(%)', '銀行/人', '期數', 
+                '每期還款日期', '每期還款本金', '每期利息', '還款期數',
+                '利息收入', '欠款', '在外本金', '餘期', '回本餘期', 
+                '附註'
             ];
             
             // 建立垂直格式的 CSV
             let csvLines = [];
             
-            // 對於每個欄位，收集所有記錄的該欄位值
-            verticalFields.forEach((fieldName, rowIndex) => {
+            // 對於每個固定欄位，收集所有記錄的該欄位值
+            verticalFields.forEach((fieldName) => {
                 let rowValues = [fieldName]; // 第一欄是欄位名稱
                 
-                filtered.forEach((record, colIndex) => {
+                filtered.forEach((record) => {
                     let value = '';
                     const calc = calculateDerivedData(record);
                     
                     switch(fieldName) {
+                        case '編號':
+                            value = record.displayId || record.caseNumber || '';
+                            break;
                         case '狀態':
                             value = getStatusLabel(record.status).text;
                             break;
                         case '方式':
                             value = record.method || '';
                             break;
-                        case '日期':
+                        case '放款日期':
                             value = record.date || '';
                             break;
                         case '借款人':
@@ -1489,13 +1502,13 @@
                         case '工作':
                             value = record.job || '';
                             break;
-                        case '借款':
+                        case '借款金額':
                             value = formatNumber(record.loanAmount || 0);
                             break;
-                        case '放款':
+                        case '放款金額':
                             value = formatNumber(record.disbursed || 0);
                             break;
-                        case '利息':
+                        case '利率(%)':
                             value = record.interestRate || 0;
                             break;
                         case '銀行/人':
@@ -1510,7 +1523,7 @@
                         case '每期還款本金':
                             value = formatNumber(record.principalPerTerm || 0);
                             break;
-                        case '利息': // 每期利息
+                        case '每期利息':
                             value = formatNumber(record.interestPerTerm || 0);
                             break;
                         case '還款期數':
@@ -1531,24 +1544,8 @@
                         case '回本餘期':
                             value = calc.roiTerms || 0;
                             break;
-                        case '本月實收款':
-                            value = formatNumber(calc.totalPrincipalPaid || 0);
-                            break;
-                        case '本月實收息':
-                            value = formatNumber(calc.totalInterestPaid || 0);
-                            break;
                         case '附註':
                             value = record.note || '';
-                            break;
-                        case '還款日程': // 新增：完整的還款日程
-                            if (record.schedule) {
-                                // 將還款日程整理成更整潔的格式
-                                const entries = parseSchedule(record.schedule);
-                                value = entries.map(e => {
-                                    const dateStr = e.date ? e.date.toISOString().split('T')[0] : '';
-                                    return `${dateStr} 本金:${e.principal} 利息:${e.interest}`;
-                                }).join(' | '); // 用管道符號分隔不同日期的還款
-                            }
                             break;
                         default:
                             value = '';
@@ -1560,6 +1557,34 @@
                 
                 csvLines.push(rowValues.join(','));
             });
+            
+            // 新增：還款日程獨立欄位（每個日期一行）
+            if (maxScheduleEntries > 0) {
+                // 先添加一個標題行
+                let scheduleTitleRow = ['還款日程'];
+                filtered.forEach(() => scheduleTitleRow.push(''));
+                csvLines.push(scheduleTitleRow.join(','));
+                
+                // 為每個還款日期的行（最多到最大還款次數）
+                for (let i = 0; i < maxScheduleEntries; i++) {
+                    let rowValues = [`還款${i + 1}`];
+                    
+                    filtered.forEach((record) => {
+                        const entries = parseSchedule(record.schedule || '');
+                        let value = '';
+                        
+                        if (i < entries.length) {
+                            const entry = entries[i];
+                            const dateStr = entry.date ? entry.date.toISOString().split('T')[0] : '';
+                            value = `${dateStr} 本金:${formatNumber(entry.principal)} 利息:${formatNumber(entry.interest)}`;
+                        }
+                        
+                        rowValues.push(`"${value}"`);
+                    });
+                    
+                    csvLines.push(rowValues.join(','));
+                }
+            }
             
             const csvContent = csvLines.join('\n');
             
