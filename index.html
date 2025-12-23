@@ -36,6 +36,31 @@
             background-color: #ffffff;
         }
         
+        /* 批次選擇相關樣式 */
+        .batch-selection-mode .select-checkbox {
+            display: table-cell !important;
+        }
+        
+        .batch-selection-mode .sticky {
+            left: 40px !important;
+        }
+        
+        .batch-selection-mode .sticky:nth-child(2) {
+            left: 160px !important;
+        }
+        
+        .batch-selection-mode .sticky:nth-child(3) {
+            left: 240px !important;
+        }
+        
+        .batch-selection-mode .sticky:nth-child(4) {
+            left: 320px !important;
+        }
+        
+        .batch-selection-mode .sticky:nth-child(5) {
+            left: 400px !important;
+        }
+        
         /* 手機版優化 */
         @media (max-width: 768px) {
             /* 隱藏桌面版表格，顯示手機版卡片 */
@@ -176,6 +201,19 @@
             .mobile-button-small {
                 padding: 0.25rem 0.5rem;
                 font-size: 0.75rem;
+            }
+            
+            /* 手機版批次選擇卡片 */
+            .mobile-batch-select {
+                position: absolute;
+                top: 0.5rem;
+                left: 0.5rem;
+                z-index: 10;
+            }
+            
+            .mobile-batch-select-card {
+                position: relative;
+                padding-left: 2.5rem;
             }
         }
         
@@ -363,13 +401,13 @@
         const listStickyOffsets = [0, 120, 200, 300, 380];
 
         const state = {
-            currentUser: null, // 修正：初始化為null，強制登入
+            currentUser: null,
             currentUserUid: null,
             currentUserName: 'Guest', 
-            isAdmin: false, // 權限標記
-            allowedStatus: ['0', '1', '3', '4'], // 預設權限 (沒有狀態2，會在登入後更新)
-            viewingUid: null, // 修改：初始設為null，登入後自動設為自己
-            usersDirectory: [], // 存放所有用戶資料 (Admin 用)
+            isAdmin: false,
+            allowedStatus: ['0', '1', '3', '4'],
+            viewingUid: null,
+            usersDirectory: [],
             
             isDemoMode: !firebaseAvailable,
             isRegistering: false,
@@ -391,9 +429,13 @@
             activeModal: { type: null, record: null },
             tempScheduleLines: [],
             isLoadingListener: false,
-            isImporting: false, 
-            // 新增：未繳案件篩選狀態
-            unpaidFilter: null, // null, 'all_unpaid', 'current_unpaid'
+            isImporting: false,
+            unpaidFilter: null,
+            
+            // 新增：批次刪除相關狀態
+            batchDeleteMode: false,
+            selectedCasesForBatch: [],
+            activeCasesFilter: false, // 新增：是否顯示狀態1和2的案件
         };
 
         // Demo Data
@@ -425,7 +467,75 @@
             if (isNaN(n)) return num; 
             return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
         };
-        const formatCaseId = (num) => `#${String(num).padStart(3, '0')}`;
+        
+        // 修正：案件編號格式化，每個用戶獨立計算
+        const formatCaseId = (num, ownerUid = null) => {
+            // 如果是demo模式或沒有ownerUid，直接格式化
+            if (!ownerUid || ownerUid === 'demo') {
+                return `#${String(num).padStart(3, '0')}`;
+            }
+            // 正常模式：使用用戶UID的前4個字元作為前綴，確保每個用戶編號獨立
+            const prefix = ownerUid.substring(0, 4).toUpperCase();
+            return `${prefix}-${String(num).padStart(3, '0')}`;
+        };
+        
+        // 修正：重新計算用戶的案件編號
+        const renumberUserCases = async (uid) => {
+            if (!uid || uid === 'demo') return;
+            
+            try {
+                // 查詢該用戶的所有案件，按放款日期排序
+                const q = query(
+                    collection(db, 'artifacts', appId, 'public', 'data', 'loan_records'),
+                    where('ownerUid', '==', uid),
+                    orderBy('date', 'asc')
+                );
+                
+                const querySnapshot = await getDocs(q);
+                const batch = writeBatch(db);
+                
+                querySnapshot.docs.forEach((docSnap, index) => {
+                    const newCaseNumber = formatCaseId(index + 1, uid);
+                    batch.update(docSnap.ref, { 
+                        caseNumber: newCaseNumber,
+                        displayId: newCaseNumber
+                    });
+                });
+                
+                await batch.commit();
+                console.log(`用戶 ${uid} 的案件已重新編號，共 ${querySnapshot.docs.length} 筆`);
+            } catch (error) {
+                console.error("重新編號失敗:", error);
+            }
+        };
+        
+        // 新增：重新編號所有用戶的案件
+        window.renumberAllUsersCases = async () => {
+            if (!state.isAdmin) {
+                window.showError("只有管理員可以重新編號案件");
+                return;
+            }
+
+            window.showConfirm("確定要重新編號所有用戶的案件嗎？這將會按照放款日期重新排序每個用戶的案件編號。此操作可能需要一些時間。", async (confirmed) => {
+                if (!confirmed) return;
+
+                showLoading(true, "正在重新編號所有用戶的案件...");
+
+                try {
+                    // 逐個用戶重新編號
+                    for (const user of state.usersDirectory) {
+                        await renumberUserCases(user.uid);
+                    }
+
+                    showLoading(false);
+                    window.showSuccess("所有用戶的案件已重新編號完成！");
+                } catch (error) {
+                    showLoading(false);
+                    console.error("重新編號所有用戶案件失敗:", error);
+                    window.showError(`重新編號失敗: ${error.message}`);
+                }
+            });
+        };
         
         const extractDatesFromSchedule = (scheduleStr) => {
             if (!scheduleStr) return [];
@@ -437,6 +547,7 @@
             }
             return matches;
         };
+        
         const sortScheduleLines = (lines) => {
             return [...lines].sort((a, b) => {
                 const datesA = extractDatesFromSchedule(a); const datesB = extractDatesFromSchedule(b);
@@ -444,6 +555,7 @@
                 if (dateA && dateB) return dateA - dateB; if (dateA) return -1; if (dateB) return 1; return 0; 
             });
         };
+        
         const getPaymentStatus = (record) => {
             if (record.status === '4') return { isPaid: true, isOverdue: false }; 
             const dates = extractDatesFromSchedule(record.schedule);
@@ -463,11 +575,9 @@
             return lines.map(line => {
                 const dateMatch = line.match(/^(\d{4}[-\/]\d{1,2}[-\/]\d{1,2})/);
                 
-                // 嘗試匹配新格式（本金: 利息:）
                 let pMatch = line.match(/本金:(\d+)/);
                 let iMatch = line.match(/利息:(\d+)/);
                 
-                // 如果沒有匹配到新格式，嘗試舊格式（P: I:）
                 if (!pMatch) pMatch = line.match(/P:(\d+)/);
                 if (!iMatch) iMatch = line.match(/I:(\d+)/);
                 
@@ -475,14 +585,13 @@
                 const principal = pMatch ? parseInt(pMatch[1], 10) : 0;
                 const interest = iMatch ? parseInt(iMatch[1], 10) : 0;
                 
-                // 轉換為新格式的原始字串
                 const raw = dateMatch ? `${dateMatch[0]} 本金:${principal} 利息:${interest}` : line;
                 
                 return { date, principal, interest, raw };
             }).filter(item => item.date !== null);
         };
 
-        // ========== 修正點1: 外在本金計算公式 ==========
+        // 修正：外在本金計算公式
         const calculateDerivedData = (record) => {
             const loanAmount = Number(record.loanAmount) || 0; 
             const disbursed = Number(record.disbursed) || 0;
@@ -509,7 +618,7 @@
 
             if (record.status === '0' || record.status === '2') {
                 return { 
-                    outstanding: 0, // 狀態0和2的外在本金為0
+                    outstanding: 0,
                     arrears: record.status === '0' ? 0 : (loanAmount - totalPrincipalPaid - totalInterestPaid),
                     remainingTerms: '-', 
                     roiTerms: '-',
@@ -518,7 +627,6 @@
                 };
             }
 
-            // 狀態1和3的外在本金計算：放款金額 - 累計已還本金 - 累計已還利息
             let outstanding = disbursed - totalPrincipalPaid - totalInterestPaid; 
             if (outstanding < 0) outstanding = 0; 
 
@@ -587,7 +695,6 @@
                         const updateData = {};
                         if (field === 'arrears') updateData.arrears = val;
                         if (field === 'outstanding') updateData.outstandingPrincipal = val;
-                        // Use public collection
                         await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'loan_records', id), updateData);
                     } catch (e) {
                         console.error("Update failed", e);
@@ -616,18 +723,17 @@
             if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
                 displayRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
             } else if (!state.isAdmin && !state.isDemoMode) {
-                 // Double check, though onSnapshot should have handled it
                  displayRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
             }
 
-            // 修改搜尋邏輯
+            // 搜尋邏輯
             const searchTerm = state.searchTerm.toLowerCase();
             const filtered = displayRecords.filter(r => 
                 (r.borrower?.toLowerCase().includes(searchTerm) || 
                  r.displayId?.toLowerCase().includes(searchTerm))
             );
 
-            // 修正點3: 計算本月已收款和本月已收息
+            // 計算本月已收款和本月已收息
             const now = new Date();
             const currentMonth = now.getMonth();
             const currentYear = now.getFullYear();
@@ -681,13 +787,11 @@
 
                 s.totalIncome += calc.totalInterestPaid; 
                 
-                // 修正點3: 計算本月已收款和本月已收息
+                // 計算本月已收款和本月已收息
                 if (r.status === '1' || r.status === '2') {
                     const { isPaid } = getPaymentStatus(r);
                     if (isPaid) {
-                        // 本月已收款 = 本金 + 利息
                         s.monthCollected += (r.status === '2' ? 0 : principal) + termInterest;
-                        // 本月已收息 = 利息
                         s.monthInterestCollected += termInterest;
                     }
                 }
@@ -730,18 +834,16 @@
         window.resizeCard = (e, id) => { e.stopPropagation(); const layout = state.cardLayout.map(c => { if (c.id === id) { return { ...c, width: c.width === 2 ? 1 : 2 }; } return c; }); updateState({ cardLayout: layout }); };
         window.toggleAuthMode = () => { updateState({ isRegistering: !state.isRegistering }); };
         
-        // --- FIX: Correct Auth flow to prevent input clearing ---
+        // 修正：Auth流程
         window.handleAuth = async (e) => { 
             e.preventDefault(); 
             if (!firebaseAvailable) { window.showError("Firebase 未設定，將無法儲存資料。"); return; } 
             
-            // 1. Get values BEFORE updating state (which causes re-render)
             const usernameInput = document.getElementById('authUsername').value.trim(); 
             const passwordInput = document.getElementById('authPassword').value; 
             const emailInput = state.isRegistering ? document.getElementById('authEmail').value.trim() : null;
             const confirmPass = state.isRegistering ? document.getElementById('authConfirmPassword').value : null;
 
-            // 2. Set loading state
             updateState({ authLoading: true }); 
 
             try { 
@@ -750,32 +852,19 @@
                 if (state.isRegistering) { 
                     if (passwordInput !== confirmPass) throw new Error("密碼不一致"); 
                     
-                    // ========== 修正：管理員權限邏輯 ==========
-                    // 檢查是否為系統中第一個用戶
-                    let role = 'user'; // 預設為普通用戶
-                    let allowedStatus = ['0', '1', '3', '4']; // 普通用戶預設權限 - 沒有狀態2
+                    let role = 'user';
+                    let allowedStatus = ['0', '1', '3', '4'];
                     
                     try {
-                        // 檢查是否已有任何用戶存在
                         const snapshot = await getDocs(query(userDirCollection));
                         
-                        // 如果沒有任何用戶，則第一個註冊者為管理員
                         if (snapshot.empty) {
                             role = 'admin';
-                            allowedStatus = ['0', '1', '2', '3', '4']; // 管理員有完整權限
+                            allowedStatus = ['0', '1', '2', '3', '4'];
                             console.log("第一個用戶，設定為管理員");
-                        } else {
-                            // 檢查是否已有管理員存在
-                            const adminExists = snapshot.docs.some(doc => doc.data().role === 'admin');
-                            if (!adminExists) {
-                                // 如果有用戶但沒有管理員，可能是系統初始化問題
-                                // 為了安全起見，不自動設定為管理員，保持為普通用戶
-                                console.log("系統中無管理員，但非第一個用戶，保持為普通用戶");
-                            }
                         }
                     } catch (error) {
                         console.error("檢查用戶目錄失敗:", error);
-                        // 如果無法檢查，預設為普通用戶
                         role = 'user';
                     }
                     
@@ -783,7 +872,6 @@
                     const user = userCredential.user; 
                     await updateProfile(user, { displayName: usernameInput }); 
                     
-                    // Store user profile in public directory
                     await setDoc(doc(userDirCollection, user.uid), { 
                         email: emailInput, 
                         uid: user.uid, 
@@ -796,12 +884,10 @@
                     window.showSuccess(role === 'admin' ? "註冊成功！您是本系統的管理員。" : "註冊成功！您是本系統的普通用戶。");
                     
                 } else { 
-                    // Login
                     const q = query(userDirCollection, where("username", "==", usernameInput));
                     const querySnapshot = await getDocs(q);
                     
                     if (querySnapshot.empty) {
-                        // Fallback: try login as email if format looks like email
                         if (usernameInput.includes('@')) {
                             await signInWithEmailAndPassword(auth, usernameInput, passwordInput);
                         } else {
@@ -820,7 +906,6 @@
         };
 
         window.handleLogout = async () => { 
-            // 先關閉所有模態框
             document.getElementById('confirm-modal')?.classList.add('hidden');
             document.getElementById('loading-modal')?.classList.add('hidden');
             
@@ -832,13 +917,12 @@
                 } 
             }
             
-            // 完全重置狀態，回到初始登入狀態
             updateState({ 
                 currentUser: null, 
                 currentUserUid: null,
                 currentUserName: 'Guest',
                 isAdmin: false,
-                allowedStatus: ['0', '1', '3', '4'], // 沒有狀態2
+                allowedStatus: ['0', '1', '3', '4'],
                 viewingUid: null,
                 usersDirectory: [],
                 isDemoMode: false,
@@ -862,17 +946,17 @@
                 tempScheduleLines: [],
                 isLoadingListener: false,
                 isImporting: false,
-                unpaidFilter: null
+                unpaidFilter: null,
+                batchDeleteMode: false,
+                selectedCasesForBatch: [],
+                activeCasesFilter: false
             });
             
-            // 清空表單資料
             formData = { ...initialFormState };
             
-            // 清空搜尋輸入框
             const searchInput = document.getElementById('searchInput');
             if (searchInput) searchInput.value = '';
             
-            // 清空認證相關輸入框
             const authUsername = document.getElementById('authUsername');
             const authPassword = document.getElementById('authPassword');
             const authEmail = document.getElementById('authEmail');
@@ -883,12 +967,10 @@
             if (authEmail) authEmail.value = '';
             if (authConfirmPassword) authConfirmPassword.value = '';
             
-            // 清除sessionStorage中的登入快取
             if (typeof sessionStorage !== 'undefined') {
                 sessionStorage.removeItem('firebase:authUser:' + firebaseConfig.apiKey + ':' + appId);
             }
             
-            // 顯示登出成功訊息
             window.showSuccess("已成功登出系統");
         };
         
@@ -898,7 +980,6 @@
         window.handleSearch = (val) => { state.searchTerm = val; state.currentPage = 1; state.unpaidFilter = null; window.refreshListUI(); };
         window.changePage = (delta) => { state.currentPage += delta; window.refreshListUI(); };
         
-        // 修改點3: 新增翻頁功能函數
         window.goToFirstPage = () => { state.currentPage = 1; window.refreshListUI(); };
         window.goToLastPage = () => { 
             let sourceRecords = state.records;
@@ -908,14 +989,19 @@
                 sourceRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
             }
             
-            // 使用新的搜尋邏輯
             const searchTerm = state.searchTerm.toLowerCase();
             let filtered = sourceRecords.filter(r => 
                 (r.borrower?.toLowerCase().includes(searchTerm) || 
                  r.displayId?.toLowerCase().includes(searchTerm))
             );
             
-            // 套用未繳篩選
+            // 修正：按日期排序
+            filtered.sort((a, b) => {
+                const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                return dateA - dateB;
+            });
+            
             if (state.unpaidFilter === 'all_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid } = getPaymentStatus(r);
@@ -926,6 +1012,11 @@
                     const { isPaid, isOverdue } = getPaymentStatus(r);
                     return r.status === '1' && !isPaid && isOverdue;
                 });
+            }
+            
+            // 新增：篩選狀態1和2的案件
+            if (state.activeCasesFilter) {
+                filtered = filtered.filter(r => r.status === '1' || r.status === '2');
             }
             
             const totalPages = Math.ceil(filtered.length / state.itemsPerPage) || 1;
@@ -941,14 +1032,19 @@
                 sourceRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
             }
             
-            // 使用新的搜尋邏輯
             const searchTerm = state.searchTerm.toLowerCase();
             let filtered = sourceRecords.filter(r => 
                 (r.borrower?.toLowerCase().includes(searchTerm) || 
                  r.displayId?.toLowerCase().includes(searchTerm))
             );
             
-            // 套用未繳篩選
+            // 修正：按日期排序
+            filtered.sort((a, b) => {
+                const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                return dateA - dateB;
+            });
+            
             if (state.unpaidFilter === 'all_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid } = getPaymentStatus(r);
@@ -961,6 +1057,11 @@
                 });
             }
             
+            // 新增：篩選狀態1和2的案件
+            if (state.activeCasesFilter) {
+                filtered = filtered.filter(r => r.status === '1' || r.status === '2');
+            }
+            
             const totalPages = Math.ceil(filtered.length / state.itemsPerPage) || 1;
             const page = parseInt(pageNum);
             if (!isNaN(page) && page >= 1 && page <= totalPages) {
@@ -969,11 +1070,11 @@
             }
         };
         
-        // 修改點4: 修改未繳案件篩選函數，新增全部案件按鈕
         window.filterUnpaidCases = (type) => {
             state.unpaidFilter = type;
             state.currentPage = 1;
             state.searchTerm = '';
+            state.activeCasesFilter = false;
             window.refreshListUI();
         };
         
@@ -981,7 +1082,185 @@
             state.unpaidFilter = null;
             state.searchTerm = '';
             state.currentPage = 1;
+            state.activeCasesFilter = false;
             window.refreshListUI();
+        };
+
+        // 新增：顯示所有未結案（狀態1和2）
+        window.showActiveCases = () => {
+            state.activeCasesFilter = true;
+            state.unpaidFilter = null;
+            state.searchTerm = '';
+            state.currentPage = 1;
+            window.refreshListUI();
+        };
+
+        // 新增：批次選擇相關功能
+        window.toggleBatchDeleteMode = () => {
+            updateState({ 
+                batchDeleteMode: !state.batchDeleteMode,
+                selectedCasesForBatch: [] 
+            });
+        };
+
+        window.toggleSelectCaseForBatch = (caseId) => {
+            const index = state.selectedCasesForBatch.indexOf(caseId);
+            if (index === -1) {
+                state.selectedCasesForBatch.push(caseId);
+            } else {
+                state.selectedCasesForBatch.splice(index, 1);
+            }
+            renderApp();
+        };
+
+        window.selectAllVisibleCasesForBatch = () => {
+            let sourceRecords = state.records;
+            if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
+                sourceRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
+            } else if (!state.isAdmin && !state.isDemoMode) {
+                sourceRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
+            }
+
+            const searchTerm = state.searchTerm.toLowerCase();
+            let filtered = sourceRecords.filter(r => 
+                (r.borrower?.toLowerCase().includes(searchTerm) || 
+                 r.displayId?.toLowerCase().includes(searchTerm))
+            );
+            
+            filtered.sort((a, b) => {
+                const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                return dateA - dateB;
+            });
+            
+            if (state.unpaidFilter === 'all_unpaid') {
+                filtered = filtered.filter(r => {
+                    const { isPaid } = getPaymentStatus(r);
+                    return r.status === '1' && !isPaid;
+                });
+            } else if (state.unpaidFilter === 'current_unpaid') {
+                filtered = filtered.filter(r => {
+                    const { isPaid, isOverdue } = getPaymentStatus(r);
+                    return r.status === '1' && !isPaid && isOverdue;
+                });
+            }
+            
+            // 新增：篩選狀態1和2的案件
+            if (state.activeCasesFilter) {
+                filtered = filtered.filter(r => r.status === '1' || r.status === '2');
+            }
+            
+            const currentRecords = filtered.slice((state.currentPage - 1) * state.itemsPerPage, state.currentPage * state.itemsPerPage);
+            
+            // 如果已經全選，則取消全選
+            const allSelected = currentRecords.every(r => state.selectedCasesForBatch.includes(r.id));
+            
+            if (allSelected) {
+                // 取消選擇所有可見案件
+                currentRecords.forEach(r => {
+                    const index = state.selectedCasesForBatch.indexOf(r.id);
+                    if (index !== -1) {
+                        state.selectedCasesForBatch.splice(index, 1);
+                    }
+                });
+            } else {
+                // 選擇所有可見案件
+                currentRecords.forEach(r => {
+                    if (!state.selectedCasesForBatch.includes(r.id)) {
+                        state.selectedCasesForBatch.push(r.id);
+                    }
+                });
+            }
+            
+            renderApp();
+        };
+
+        window.executeBatchDelete = async () => {
+            if (state.selectedCasesForBatch.length === 0) {
+                window.showError("請先選擇要刪除的案件");
+                return;
+            }
+
+            const selectedCount = state.selectedCasesForBatch.length;
+            const selectedRecords = state.records.filter(r => state.selectedCasesForBatch.includes(r.id));
+            
+            // 顯示確認訊息
+            let message = `確定要刪除選取的 ${selectedCount} 筆案件嗎？<br>`;
+            selectedRecords.slice(0, 5).forEach((r, i) => {
+                message += `${i+1}. ${r.displayId || r.caseNumber || ''} - ${r.borrower}<br>`;
+            });
+            if (selectedCount > 5) {
+                message += `... 還有 ${selectedCount - 5} 筆案件`;
+            }
+            message += "<br><br>此操作無法復原！";
+            
+            window.showConfirm(message, async (confirmed) => {
+                if (!confirmed) return;
+
+                showLoading(true, `正在刪除 ${selectedCount} 筆案件...`);
+
+                try {
+                    if (state.isDemoMode) {
+                        // Demo模式：從本地記錄中刪除
+                        state.records = state.records.filter(r => !state.selectedCasesForBatch.includes(r.id));
+                        
+                        // 重新排序並編號demo用戶的案件
+                        const demoRecords = state.records.filter(r => r.ownerUid === 'demo');
+                        const sorted = demoRecords.sort((a, b) => {
+                            const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                            const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                            return dateA - dateB;
+                        });
+                        
+                        sorted.forEach((record, index) => {
+                            record.caseNumber = formatCaseId(index + 1, 'demo');
+                            record.displayId = formatCaseId(index + 1, 'demo');
+                        });
+                        
+                        const otherRecords = state.records.filter(r => r.ownerUid !== 'demo');
+                        state.records = [...otherRecords, ...sorted];
+                        
+                        showLoading(false);
+                        window.showSuccess(`已成功刪除 ${selectedCount} 筆案件，編號已重新排序。`);
+                        
+                        // 退出批次刪除模式
+                        updateState({ 
+                            batchDeleteMode: false,
+                            selectedCasesForBatch: [] 
+                        });
+                        
+                    } else if (firebaseAvailable) {
+                        // Firebase模式：批次刪除文件
+                        const batch = writeBatch(db);
+                        
+                        selectedRecords.forEach(record => {
+                            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'loan_records', record.id);
+                            batch.delete(docRef);
+                        });
+                        
+                        await batch.commit();
+                        
+                        // 重新計算每個用戶的案件編號
+                        const affectedUsers = [...new Set(selectedRecords.map(r => r.ownerUid).filter(uid => uid))];
+                        for (const uid of affectedUsers) {
+                            await renumberUserCases(uid);
+                        }
+                        
+                        showLoading(false);
+                        window.showSuccess(`已成功刪除 ${selectedCount} 筆案件，編號已重新排序。`);
+                        
+                        // 退出批次刪除模式
+                        updateState({ 
+                            batchDeleteMode: false,
+                            selectedCasesForBatch: [] 
+                        });
+                    }
+                } catch (error) {
+                    showLoading(false);
+                    console.error("批次刪除失敗:", error);
+                    window.showError(`批次刪除失敗: ${error.message}`);
+                }
+            });
         };
 
         window.updateFormData = (key, val, shouldRender = false) => { 
@@ -1020,13 +1299,13 @@
             } 
         };
 
+        // 修正：儲存表單功能，確保案件編號正確
         window.handleSaveForm = async () => { 
             if (!state.currentUser && !state.isDemoMode) { 
                 window.showError("請先登入才能儲存資料。"); 
                 return; 
             }
             
-            // 檢查狀態2權限
             if (formData.status === '2' && !state.allowedStatus.includes('2')) {
                 window.showError("您沒有權限使用「代管案件」狀態（狀態2）。");
                 return;
@@ -1036,91 +1315,95 @@
             
             if (state.isDemoMode) { 
                 if (!state.editingRecord) { 
-                    const newRec = { ...dataToSave, id: `new_${Date.now()}`, caseNumber: '', createdAt: serverTimestamp(), ownerUid: 'demo' }; 
+                    const newRec = { 
+                        ...dataToSave, 
+                        id: `new_${Date.now()}`, 
+                        caseNumber: '', 
+                        createdAt: serverTimestamp(), 
+                        ownerUid: 'demo' 
+                    }; 
                     state.records.push(newRec); 
+                    
+                    // 重新排序並編號demo用戶的案件
+                    const demoRecords = state.records.filter(r => r.ownerUid === 'demo');
+                    const sorted = demoRecords.sort((a, b) => {
+                        const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                        const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                        return dateA - dateB;
+                    });
+                    
+                    sorted.forEach((record, index) => {
+                        record.caseNumber = formatCaseId(index + 1, 'demo');
+                        record.displayId = formatCaseId(index + 1, 'demo');
+                    });
+                    
+                    const otherRecords = state.records.filter(r => r.ownerUid !== 'demo');
+                    state.records = [...otherRecords, ...sorted];
+                    
                 } else { 
                     const idx = state.records.findIndex(r => r.id === state.editingRecord.id); 
                     if (idx !== -1) state.records[idx] = { ...state.records[idx], ...dataToSave }; 
                 } 
                 
-                // 重新排序並編號
-                const userRecords = state.records.filter(r => r.ownerUid === 'demo');
-                const sorted = userRecords.sort((a, b) => {
-                    const dateA = new Date(a.date || '9999-12-31');
-                    const dateB = new Date(b.date || '9999-12-31');
-                    return dateA - dateB;
-                });
-                
-                // 重新賦予編號
-                sorted.forEach((record, index) => {
-                    record.caseNumber = formatCaseId(index + 1);
-                    record.displayId = formatCaseId(index + 1);
-                });
-                
-                // 合併回所有記錄
-                const otherRecords = state.records.filter(r => r.ownerUid !== 'demo');
-                state.records = [...otherRecords, ...sorted];
-                
             } else if (firebaseAvailable) { 
-                // Save to PUBLIC collection with ownerUid
                 const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'loan_records'); 
                 
                 if (!state.editingRecord) { 
                     dataToSave.createdAt = serverTimestamp(); 
-                    dataToSave.ownerUid = state.currentUserUid; // Important: Tag the owner
-                    await addDoc(colRef, dataToSave); 
+                    dataToSave.ownerUid = state.currentUserUid;
+                    
+                    // 先儲存案件
+                    const docRef = await addDoc(colRef, dataToSave);
+                    
+                    // 重新計算該用戶的案件編號
+                    await renumberUserCases(state.currentUserUid);
+                    
+                    window.showSuccess(`案件資料已成功新增，編號已按日期重新排序。`);
                 } else { 
-                    await updateDoc(doc(colRef, state.editingRecord.id), dataToSave); 
+                    await updateDoc(doc(colRef, state.editingRecord.id), dataToSave);
+                    
+                    // 如果修改了日期，可能需要重新編號
+                    if (formData.date !== state.editingRecord.date) {
+                        await renumberUserCases(state.currentUserUid);
+                    }
+                    
+                    window.showSuccess(`案件資料已成功更新。`);
                 } 
-                
-                // 重新排序並編號
-                const q = query(
-                    collection(db, 'artifacts', appId, 'public', 'data', 'loan_records'),
-                    where('ownerUid', '==', state.currentUserUid),
-                    orderBy('date', 'asc')
-                );
-                const querySnapshot = await getDocs(q);
-                
-                // 批次更新所有記錄的編號
-                const batch = writeBatch(db);
-                
-                querySnapshot.docs.forEach((docSnap, index) => {
-                    const newCaseNumber = formatCaseId(index + 1);
-                    batch.update(docSnap.ref, { 
-                        caseNumber: newCaseNumber,
-                        displayId: newCaseNumber
-                    });
-                });
-                
-                await batch.commit();
             } 
+            
             window.setActiveTab('list'); 
-            window.showSuccess(`案件資料已成功${state.editingRecord ? '更新' : '新增'}，編號已按日期重新排序。`);
         };
         
+        // 修正：刪除功能，確保重新編號正確
         window.handleDelete = (id) => {
             window.showConfirm("確定要永久刪除此案件嗎？此操作無法復原。", async (confirmed) => {
                 if (!confirmed) return;
+                
+                const recordToDelete = state.records.find(r => r.id === id);
+                if (!recordToDelete) {
+                    window.showError("找不到要刪除的案件");
+                    return;
+                }
+                
+                const ownerUid = recordToDelete.ownerUid;
                 
                 if (state.isDemoMode) {
                     // 刪除案件
                     state.records = state.records.filter(r => r.id !== id);
                     
-                    // 重新排序並編號
-                    const userRecords = state.records.filter(r => r.ownerUid === 'demo');
-                    const sorted = userRecords.sort((a, b) => {
-                        const dateA = new Date(a.date || '9999-12-31');
-                        const dateB = new Date(b.date || '9999-12-31');
+                    // 重新排序並編號demo用戶的案件
+                    const demoRecords = state.records.filter(r => r.ownerUid === 'demo');
+                    const sorted = demoRecords.sort((a, b) => {
+                        const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                        const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
                         return dateA - dateB;
                     });
                     
-                    // 重新賦予編號
                     sorted.forEach((record, index) => {
-                        record.caseNumber = formatCaseId(index + 1);
-                        record.displayId = formatCaseId(index + 1);
+                        record.caseNumber = formatCaseId(index + 1, 'demo');
+                        record.displayId = formatCaseId(index + 1, 'demo');
                     });
                     
-                    // 合併回所有記錄
                     const otherRecords = state.records.filter(r => r.ownerUid !== 'demo');
                     state.records = [...otherRecords, ...sorted];
                     
@@ -1131,49 +1414,32 @@
                         // 先刪除文件
                         await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'loan_records', id));
                         
-                        // 重新排序並編號
-                        const q = query(
-                            collection(db, 'artifacts', appId, 'public', 'data', 'loan_records'),
-                            where('ownerUid', '==', state.currentUserUid),
-                            orderBy('date', 'asc')
-                        );
-                        const querySnapshot = await getDocs(q);
+                        // 重新計算該用戶的案件編號
+                        if (ownerUid) {
+                            await renumberUserCases(ownerUid);
+                        }
                         
-                        // 批次更新所有記錄的編號
-                        const batch = writeBatch(db);
-                        const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'loan_records');
-                        
-                        querySnapshot.docs.forEach((docSnap, index) => {
-                            const newCaseNumber = formatCaseId(index + 1);
-                            batch.update(docSnap.ref, { 
-                                caseNumber: newCaseNumber,
-                                displayId: newCaseNumber
-                            });
-                        });
-                        
-                        await batch.commit();
                         window.showSuccess("案件已成功刪除，編號已重新排序。");
                     } catch (e) {
+                        console.error("刪除失敗:", e);
                         window.showError("刪除失敗，請檢查權限或連線。");
                     }
                 }
             });
         };
         
-        // --- Admin Functions (FIXED: Simplified argument passing) ---
+        // Admin Functions
         window.toggleUserStatus2Permission = async (uid) => {
             if (!state.isAdmin) {
                 window.showError("只有管理員可以修改權限");
                 return;
             }
             
-            // 禁止修改自己的管理員權限
             if (uid === state.currentUserUid) {
                 window.showError("無法修改自己的權限");
                 return;
             }
             
-            // Find current user data from local state instead of passing from HTML
             const targetUser = state.usersDirectory.find(u => u.uid === uid);
             if (!targetUser) {
                 window.showError("找不到用戶資料");
@@ -1201,14 +1467,67 @@
             }
         };
 
-        // 新增：刪除用戶帳號功能
+        // 新增：清理無主案件功能
+        window.cleanupOrphanedCases = async () => {
+            if (!state.isAdmin) {
+                window.showError("只有管理員可以清理無主案件");
+                return;
+            }
+            
+            window.showConfirm("確定要清理所有無主案件嗎？這些案件將被永久刪除且無法復原。", async (confirmed) => {
+                if (!confirmed) return;
+                
+                showLoading(true, "正在檢查無主案件...");
+                
+                try {
+                    // 取得所有用戶
+                    const userDirCollection = collection(db, 'artifacts', appId, 'public', 'data', 'user_directory');
+                    const userSnapshot = await getDocs(userDirCollection);
+                    const validUserIds = userSnapshot.docs.map(doc => doc.id);
+                    
+                    // 取得所有案件
+                    const loanRecordsRef = collection(db, 'artifacts', appId, 'public', 'data', 'loan_records');
+                    const loanSnapshot = await getDocs(loanRecordsRef);
+                    
+                    const batch = writeBatch(db);
+                    let deletedCount = 0;
+                    
+                    // 找出無主案件
+                    loanSnapshot.docs.forEach((docSnap) => {
+                        const data = docSnap.data();
+                        if (!validUserIds.includes(data.ownerUid)) {
+                            batch.delete(docSnap.ref);
+                            deletedCount++;
+                        }
+                    });
+                    
+                    if (deletedCount > 0) {
+                        await batch.commit();
+                        window.showSuccess(`已成功刪除 ${deletedCount} 筆無主案件`);
+                        
+                        // 重新載入案件列表
+                        if (state.isLoadingListener) {
+                            state.isLoadingListener = false;
+                        }
+                    } else {
+                        window.showSuccess("沒有發現無主案件");
+                    }
+                    
+                    showLoading(false);
+                } catch (error) {
+                    showLoading(false);
+                    console.error("清理無主案件失敗:", error);
+                    window.showError(`清理失敗: ${error.message}`);
+                }
+            });
+        };
+
         window.deleteUserAccount = async (uid, username) => {
             if (!state.isAdmin) {
                 window.showError("只有管理員可以刪除帳號");
                 return;
             }
             
-            // 禁止刪除自己
             if (uid === state.currentUserUid) {
                 window.showError("無法刪除自己的帳號");
                 return;
@@ -1235,23 +1554,12 @@
                         batch.delete(docSnap.ref);
                     });
                     
-                    // 3. 嘗試刪除 Firebase Auth 中的用戶
-                    try {
-                        // 注意：在客戶端無法直接刪除其他用戶，需要後端或管理員權限
-                        // 這裡我們只能刪除 Firestore 記錄，Auth 用戶會殘留
-                        // 如果需要完全刪除，需要後端支援
-                        console.log("注意：Firebase Auth 用戶需要後端管理員權限才能刪除");
-                    } catch (authError) {
-                        console.warn("無法刪除 Auth 用戶:", authError);
-                    }
-                    
                     await batch.commit();
                     
                     // 更新本地狀態
                     state.usersDirectory = state.usersDirectory.filter(u => u.uid !== uid);
                     state.records = state.records.filter(r => r.ownerUid !== uid);
                     
-                    // 如果當前檢視對象是被刪除的用戶，切換到'all'
                     if (state.viewingUid === uid) {
                         state.viewingUid = 'all';
                     }
@@ -1273,11 +1581,8 @@
             state.repaymentSearchTerm = val; 
             state.selectedRepaymentId = ''; 
             
-            // 根據用戶權限篩選案件
             let repaymentCases = state.records.filter(r => {
-                // 只顯示進行中案件
                 if (r.status === '1') return true;
-                // 只有有狀態2權限的用戶能看到代管案件
                 if (r.status === '2' && state.allowedStatus.includes('2')) return true;
                 return false;
             });
@@ -1336,7 +1641,6 @@
             const record = state.records.find(r => r.id === state.selectedRepaymentId); 
             if (!record) return; 
             
-            // 使用新格式
             const newEntry = `${state.repaymentDate} 本金:${Number(state.repaymentPrincipal)} 利息:${Number(state.repaymentInterest)}`;
             const currentSchedule = record.schedule || ''; 
             const newSchedule = (currentSchedule ? currentSchedule + '\n' : '') + newEntry;
@@ -1359,8 +1663,6 @@
             window.showSuccess("入帳成功！財務指標已更新。"); 
             window.resetRepaymentSelection(); 
         };
-        
-        // 移除所有AI相關函數
         
         window.openModal = (type, id) => { const r = state.records.find(rec => rec.id === id); let lines = []; if (type === 'schedule') { lines = sortScheduleLines((r.schedule || '').split('\n').filter(l => l.trim() !== '')); } updateState({ activeModal: { type, record: r }, tempScheduleLines: lines }); };
         window.saveModalData = async (id, type) => { 
@@ -1394,7 +1696,6 @@
             updateState({ activeModal: { type: null, record: null } }); 
         };
         
-        // 修改點5: 更新 addScheduleLine 函數
         window.addScheduleLine = () => {
             const record = state.activeModal.record;
             const principal = Number(record.principalPerTerm) || 0;
@@ -1410,31 +1711,44 @@
         
         window.enterDemoMode = () => { 
             if(state.records.length === 0) { 
-                // Restore demo data
                 state.records = [
                      { id: 'demo1', caseNumber: '#001', displayId: '#001', borrower: '王小明', status: '1', method: '叨簿子', loanAmount: 100000, disbursed: 90000, interestRate: 5.0, terms: 10, principalPerTerm: 10000, interestPerTerm: 5000, date: '2023-10-01', schedule: '2023-11-01 本金:10000 利息:5000\n2023-12-01 本金:10000 利息:5000', note: '正常繳款中', job: '工程師', agent: '張三', ownerUid: 'demo' },
                      { id: 'demo2', caseNumber: '#002', displayId: '#002', borrower: '李大華', status: '4', method: '設定', loanAmount: 500000, disbursed: 450000, interestRate: 3.0, specialRate: 5.0, terms: 0, principalPerTerm: 0, interestPerTerm: 15000, date: '2023-09-15', schedule: '', note: '代管案件，每月僅收息', job: '業務', agent: '李四', ownerUid: 'demo' },
                      { id: 'demo3', caseNumber: '#003', displayId: '#003', borrower: '陳淑芬', status: '3', method: '票貼', loanAmount: 30000, disbursed: 27000, interestRate: 10.0, terms: 3, principalPerTerm: 10000, interestPerTerm: 3000, date: '2023-11-01', schedule: '', note: '已失聯，列為呆帳', job: '自營商', agent: '王五', ownerUid: 'demo' },
                      { id: 'demo4', caseNumber: '#004', displayId: '#004', borrower: '張志豪', status: '0', method: '小額', loanAmount: 20000, disbursed: 20000, interestRate: 0, terms: 1, principalPerTerm: 20000, interestPerTerm: 0, date: '2023-08-01', schedule: '2023-08-05 本金:20000 利息:0', note: '已結清', job: '司機', agent: '趙六', ownerUid: 'demo' }
                 ];
-            } 
-            // FIXED: Set isAdmin to false for Demo users to hide Admin features
+            }
+            
+            // 修正：確保demo模式也按日期排序
+            const demoRecords = state.records.filter(r => r.ownerUid === 'demo');
+            const sorted = demoRecords.sort((a, b) => {
+                const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                return dateA - dateB;
+            });
+            
+            sorted.forEach((record, index) => {
+                record.caseNumber = formatCaseId(index + 1, 'demo');
+                record.displayId = formatCaseId(index + 1, 'demo');
+            });
+            
+            const otherRecords = state.records.filter(r => r.ownerUid !== 'demo');
+            state.records = [...otherRecords, ...sorted];
+            
             updateState({ 
                 isDemoMode: true, 
                 currentUser: 'Guest', 
-                allowedStatus: ['0', '1', '3', '4'], // 移除狀態2
+                allowedStatus: ['0', '1', '3', '4'],
                 isAdmin: false 
             }); 
         };
         window.openModalList = (type) => updateState({ modalType: type });
 
         // =======================================================
-        // NEW: EXCEL EXPORT & VERTICAL CSV IMPORT LOGIC
+        // EXCEL EXPORT & VERTICAL CSV IMPORT LOGIC
         // =======================================================
         
-        // --- 1. Export Logic ---
         window.exportToExcel = () => {
-            // 獲取當前過濾的資料（與列表顯示一致）
             let sourceRecords = state.records;
             if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
                 sourceRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
@@ -1442,7 +1756,6 @@
                 sourceRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
             }
             
-            // 使用新的搜尋邏輯
             const searchTerm = state.searchTerm.toLowerCase();
             const filtered = sourceRecords.filter(r => 
                 (r.borrower?.toLowerCase().includes(searchTerm) || 
@@ -1454,7 +1767,6 @@
                 return;
             }
 
-            // 分析所有案件的還款日期，找出最大還款次數
             let maxScheduleEntries = 0;
             filtered.forEach(record => {
                 const entries = parseSchedule(record.schedule || '');
@@ -1463,7 +1775,6 @@
                 }
             });
             
-            // 定義垂直 CSV 的欄位順序
             const verticalFields = [
                 '編號', '狀態', '方式', '放款日期', '借款人', '工作', 
                 '借款金額', '放款金額', '利率(%)', '銀行/人', '期數', 
@@ -1472,12 +1783,10 @@
                 '附註'
             ];
             
-            // 建立垂直格式的 CSV
             let csvLines = [];
             
-            // 對於每個固定欄位，收集所有記錄的該欄位值
             verticalFields.forEach((fieldName) => {
-                let rowValues = [fieldName]; // 第一欄是欄位名稱
+                let rowValues = [fieldName];
                 
                 filtered.forEach((record) => {
                     let value = '';
@@ -1551,21 +1860,17 @@
                             value = '';
                     }
                     
-                    // 處理特殊字元並加入該列
                     rowValues.push(`"${String(value).replace(/"/g, '""')}"`);
                 });
                 
                 csvLines.push(rowValues.join(','));
             });
             
-            // 新增：還款日程獨立欄位（每個日期一行）
             if (maxScheduleEntries > 0) {
-                // 先添加一個標題行
                 let scheduleTitleRow = ['還款日程'];
                 filtered.forEach(() => scheduleTitleRow.push(''));
                 csvLines.push(scheduleTitleRow.join(','));
                 
-                // 為每個還款日期的行（最多到最大還款次數）
                 for (let i = 0; i < maxScheduleEntries; i++) {
                     let rowValues = [`還款${i + 1}`];
                     
@@ -1588,7 +1893,6 @@
             
             const csvContent = csvLines.join('\n');
             
-            // 建立 Blob 並下載
             const blob = new Blob(["\uFEFF" + csvContent], { type: 'text/csv;charset=utf-8;' });
             const url = URL.createObjectURL(blob);
             
@@ -1600,32 +1904,27 @@
             document.body.removeChild(link);
         };
 
-        // --- 2. Vertical CSV Import Logic (Ported from loanmgmt4-3.html) ---
-        
-        // 核心欄位垂直索引定義
+        // Vertical CSV Import Logic
         const MAP_ROWS = {
-            STATUS: 0,          // 狀態 (第一行)
-            CATEGORY: 1,        // 方式 (第二行)
-            LOAN_DATE: 2,       // 日期 (第三行)
-            BORROWER: 3,        // 借款人 (第四行)
-            JOB: 4,             // 工作
-            AMOUNT: 5,          // 借款
-            ACTUAL_AMOUNT: 6,   // 放款
-            INTEREST_RATE: 7,   // 利息
-            AGENT: 8,           // 銀行/人
-            PERIODS: 9,         // 期數
-            RULE_DAY: 10,       // 每期還款日期 (規則)
-            HISTORY_START: 11   // 歷史還款日期開始的垂直行索引 (第 12 行)
+            STATUS: 0,
+            CATEGORY: 1,
+            LOAN_DATE: 2,
+            BORROWER: 3,
+            JOB: 4,
+            AMOUNT: 5,
+            ACTUAL_AMOUNT: 6,
+            INTEREST_RATE: 7,
+            AGENT: 8,
+            PERIODS: 9,
+            RULE_DAY: 10,
+            HISTORY_START: 11
         };
         
         const cleanNumber = (val) => val ? parseFloat(String(val).replace(/,/g, '').replace(/%/g, '').trim()) : 0;
         
-        // CSV 垂直解析函數 - 修正版
         const parseCSV = (text) => {
-            // 修正：先去除空白行，確保正確解析
             const rawRows = text.trim().split(/\r\n|\n/).filter(row => row.trim() !== '');
             
-            // 修正：更穩健的 CSV 解析，處理引號和逗號
             const rows = rawRows.map(row => {
                 const values = [];
                 let current = '';
@@ -1650,18 +1949,14 @@
             
             const parsedCases = [];
             const totalCols = rows[0].length;
-            
-            // 修正：數據從第1列開始（索引0是欄位名稱）
-            // 但垂直格式中，第一列（索引0）是欄位名稱，數據從第二列（索引1）開始
-            const startingCol = 1; // 修正：從第1列開始（索引1），而不是第2列
-            
+            const startingCol = 1;
+
             console.log(`CSV解析：總列數=${totalCols}, 從第${startingCol}列開始解析`);
 
             for (let col = startingCol; col < totalCols; col++) {
                 const borrowerName = rows[MAP_ROWS.BORROWER]?.[col]?.trim();
                 const loanAmount = cleanNumber(rows[MAP_ROWS.AMOUNT]?.[col]);
                 
-                // 修正：放寬判斷條件，只要有名稱就解析
                 if (!borrowerName && loanAmount === 0) {
                     console.log(`跳過第${col}列：無借款人名稱且借款金額為0`);
                     continue;
@@ -1671,14 +1966,13 @@
                 const terms = cleanNumber(rows[MAP_ROWS.PERIODS]?.[col]);
                 const interestRateFloat = cleanNumber(rows[MAP_ROWS.INTEREST_RATE]?.[col]) / 100;
 
-                // 狀態轉換
                 if (!['0', '1', '2', '3', '4'].includes(status)) {
                     const statusText = status.toLowerCase();
                     if (statusText.includes('進行') || statusText.includes('正常')) status = '1';
                     else if (statusText.includes('代管')) status = '2';
                     else if (statusText.includes('呆帳')) status = '3';
                     else if (statusText.includes('結案')) status = '0';
-                    else status = '1'; // 預設為進行中
+                    else status = '1';
                 }
 
                 let principalPerTerm = 0;
@@ -1690,17 +1984,13 @@
                 const scheduleLines = [];
                 let lastRepaymentDate = '';
 
-                // 修正：更靈活的還款日期解析
-                // 檢查是否有"還款日程"欄位
                 const scheduleRowIndex = rows.findIndex(row => row[0]?.includes('還款日程'));
                 if (scheduleRowIndex !== -1 && rows[scheduleRowIndex]?.[col]) {
                     const scheduleText = rows[scheduleRowIndex][col];
                     if (scheduleText) {
-                        // 嘗試解析多種格式的還款日程
                         const scheduleEntries = scheduleText.split('|').map(entry => entry.trim());
                         scheduleEntries.forEach(entry => {
                             if (entry) {
-                                // 嘗試提取日期和金額
                                 const dateMatch = entry.match(/(\d{4}[-\/]\d{1,2}[-\/]\d{1,2})/);
                                 const principalMatch = entry.match(/本金[:\s]*(\d+)/);
                                 const interestMatch = entry.match(/利息[:\s]*(\d+)/);
@@ -1716,7 +2006,6 @@
                     }
                 }
                 
-                // 如果沒有找到"還款日程"欄位，嘗試從歷史行解析
                 if (scheduleLines.length === 0) {
                     for (let rowIdx = MAP_ROWS.HISTORY_START; rowIdx < rows.length; rowIdx++) {
                         const historyDateStr = rows[rowIdx]?.[col]?.trim();
@@ -1797,7 +2086,7 @@
             if (file.type !== 'text/csv' && !file.name.endsWith('.csv')) { window.showError("請選擇有效的 CSV 檔案。"); return; }
 
             const reader = new FileReader();
-            reader.readAsText(file, 'Big5'); // Support Traditional Chinese Encoding
+            reader.readAsText(file, 'Big5');
 
             reader.onload = async (e) => {
                 const csvText = e.target.result;
@@ -1818,7 +2107,6 @@
             
             if (records.length === 0) { showLoading(false); window.showError("CSV 檔案內容為空或無法解析出有效案件。"); return; }
             
-            // CSV導入後的重新排序
             if (state.isDemoMode) {
                 const demoRecords = records.map(r => ({ 
                     ...r, 
@@ -1829,21 +2117,18 @@
                 }));
                 state.records = [...state.records, ...demoRecords];
                 
-                // 按放款日期排序並重新編號
                 const userRecords = state.records.filter(r => r.ownerUid === 'demo');
                 const sorted = userRecords.sort((a, b) => {
-                    const dateA = new Date(a.date || '9999-12-31');
-                    const dateB = new Date(b.date || '9999-12-31');
+                    const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                    const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
                     return dateA - dateB;
                 });
                 
-                // 重新賦予編號
                 sorted.forEach((record, index) => {
-                    record.caseNumber = formatCaseId(index + 1);
-                    record.displayId = formatCaseId(index + 1);
+                    record.caseNumber = formatCaseId(index + 1, 'demo');
+                    record.displayId = formatCaseId(index + 1, 'demo');
                 });
                 
-                // 合併回所有記錄
                 const otherRecords = state.records.filter(r => r.ownerUid !== 'demo');
                 state.records = [...otherRecords, ...sorted];
                 
@@ -1856,35 +2141,23 @@
             if (firebaseAvailable) {
                 try {
                     const batch = writeBatch(db);
-                    // FIX: Write to public collection to maintain admin visibility
                     const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'loan_records');
                     
                     records.forEach((record) => {
                         const newDocRef = doc(colRef);
-                        batch.set(newDocRef, record);
+                        batch.set(newDocRef, {
+                            ...record,
+                            ownerUid: state.currentUserUid,
+                            // 修正：匯入時先給一個臨時編號，之後重新編號會更新
+                            caseNumber: '',
+                            displayId: ''
+                        });
                     });
 
                     await batch.commit();
                     
-                    // 重新排序並編號
-                    const q = query(
-                        collection(db, 'artifacts', appId, 'public', 'data', 'loan_records'),
-                        where('ownerUid', '==', state.currentUserUid),
-                        orderBy('date', 'asc')
-                    );
-                    const querySnapshot = await getDocs(q);
-                    
-                    const renumberBatch = writeBatch(db);
-                    
-                    querySnapshot.docs.forEach((docSnap, index) => {
-                        const newCaseNumber = formatCaseId(index + 1);
-                        renumberBatch.update(docSnap.ref, { 
-                            caseNumber: newCaseNumber,
-                            displayId: newCaseNumber
-                        });
-                    });
-                    
-                    await renumberBatch.commit();
+                    // 修正：匯入後重新計算用戶的案件編號
+                    await renumberUserCases(state.currentUserUid);
                     
                     showLoading(false);
                     window.showSuccess(`成功匯入 ${records.length} 筆新案件，編號已按日期重新排序！`);
@@ -1896,7 +2169,7 @@
             }
         };
 
-        // 新增：生成手機版卡片HTML
+        // 生成手機版卡片HTML
         const generateMobileCardsHtml = () => {
             let sourceRecords = state.records;
             if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
@@ -1905,22 +2178,19 @@
                 sourceRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
             }
 
-            // 使用搜尋邏輯
             const searchTerm = state.searchTerm.toLowerCase();
             let filtered = sourceRecords.filter(r => 
                 (r.borrower?.toLowerCase().includes(searchTerm) || 
                  r.displayId?.toLowerCase().includes(searchTerm))
             );
             
-            // ========== 修正點2: 案件列表排序 ==========
-            // 按照放款日期排序（從舊到新）
+            // 修正排序邏輯：按放款日期排序（從舊到新）
             filtered.sort((a, b) => {
-                const dateA = new Date(a.date || '9999-12-31');
-                const dateB = new Date(b.date || '9999-12-31');
-                return dateA - dateB; // 升序排序
+                const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                return dateA - dateB;
             });
             
-            // 套用未繳篩選
             if (state.unpaidFilter === 'all_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid } = getPaymentStatus(r);
@@ -1931,6 +2201,11 @@
                     const { isPaid, isOverdue } = getPaymentStatus(r);
                     return r.status === '1' && !isPaid && isOverdue;
                 });
+            }
+            
+            // 新增：篩選狀態1和2的案件
+            if (state.activeCasesFilter) {
+                filtered = filtered.filter(r => r.status === '1' || r.status === '2');
             }
             
             const currentRecords = filtered.slice((state.currentPage - 1) * state.itemsPerPage, state.currentPage * state.itemsPerPage);
@@ -1944,7 +2219,6 @@
                 const calc = calculateDerivedData(r);
                 const statusLbl = getStatusLabel(r.status);
                 
-                // 決定繳款狀態樣式
                 let paymentStatusClass = 'unpaid';
                 let paymentStatusText = '未繳';
                 let paymentStatusIcon = 'alert-circle';
@@ -1959,10 +2233,54 @@
                     paymentStatusIcon = 'alert-triangle';
                 }
                 
-                // 計算每期應繳金額
                 const termAmount = (Number(r.principalPerTerm) || 0) + (Number(r.interestPerTerm) || 0);
                 
-                // 移除AI相關按鈕
+                // 批次選擇模式的卡片
+                if (state.batchDeleteMode) {
+                    const isSelected = state.selectedCasesForBatch.includes(r.id);
+                    
+                    return `
+                    <div class="mobile-case-card mobile-batch-select-card">
+                        <div class="mobile-batch-select">
+                            <input type="checkbox" ${isSelected ? 'checked' : ''} onclick="window.toggleSelectCaseForBatch('${r.id}')" class="w-5 h-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        </div>
+                        <div class="mobile-case-header">
+                            <div>
+                                <div class="flex items-center">
+                                    <span class="mobile-case-id">${r.displayId || r.caseNumber || ''}</span>
+                                    <span class="mobile-status-badge ${statusLbl.color}">${statusLbl.text}</span>
+                                </div>
+                                <div class="mobile-borrower-name">${r.borrower || ''}</div>
+                                <div class="mobile-payment-status ${paymentStatusClass}">
+                                    <i data-lucide="${paymentStatusIcon}" class="w-3 h-3 mr-1"></i>
+                                    ${paymentStatusText}
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="mobile-case-details">
+                            <div class="mobile-detail-item">
+                                <span class="mobile-detail-label">借款金額</span>
+                                <span class="mobile-detail-value">$${formatNumber(r.loanAmount || 0)}</span>
+                            </div>
+                            <div class="mobile-detail-item">
+                                <span class="mobile-detail-label">放款金額</span>
+                                <span class="mobile-detail-value">$${formatNumber(r.disbursed || 0)}</span>
+                            </div>
+                            <div class="mobile-detail-item">
+                                <span class="mobile-detail-label">欠款</span>
+                                <span class="mobile-detail-value text-red-600 font-bold">$${formatNumber(calc.arrears || 0)}</span>
+                            </div>
+                            <div class="mobile-detail-item">
+                                <span class="mobile-detail-label">在外本金</span>
+                                <span class="mobile-detail-value">$${formatNumber(calc.outstanding || 0)}</span>
+                            </div>
+                        </div>
+                    </div>
+                    `;
+                }
+                
+                // 正常模式的卡片
                 return `
                 <div class="mobile-case-card">
                     <div class="mobile-case-header">
@@ -2022,7 +2340,7 @@
             }).join('');
         };
 
-        // ========== 修正點2: 修改 refreshListUI 函數 ==========
+        // 修正：refreshListUI 函數，確保案件排序正確
         window.refreshListUI = () => {
             const tbody = document.getElementById('loanListBody');
             const mobileContainer = document.getElementById('mobileListContainer');
@@ -2034,7 +2352,6 @@
             const pageInput = document.getElementById('pageInput');
             const pageGoBtn = document.getElementById('pageGoBtn');
 
-            // 生成桌面版表格
             if (tbody) {
                 let sourceRecords = state.records;
                 if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
@@ -2049,14 +2366,13 @@
                      r.displayId?.toLowerCase().includes(searchTerm))
                 );
                 
-                // ========== 修正：按照放款日期排序 ==========
+                // 修正排序邏輯：按照放款日期排序
                 filtered.sort((a, b) => {
-                    const dateA = new Date(a.date || '9999-12-31');
-                    const dateB = new Date(b.date || '9999-12-31');
-                    return dateA - dateB; // 升序排序
+                    const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                    const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                    return dateA - dateB;
                 });
                 
-                // 套用未繳篩選（在排序之後）
                 if (state.unpaidFilter === 'all_unpaid') {
                     filtered = filtered.filter(r => {
                         const { isPaid } = getPaymentStatus(r);
@@ -2069,10 +2385,15 @@
                     });
                 }
                 
+                // 新增：篩選狀態1和2的案件
+                if (state.activeCasesFilter) {
+                    filtered = filtered.filter(r => r.status === '1' || r.status === '2');
+                }
+                
                 const currentRecords = filtered.slice((state.currentPage - 1) * state.itemsPerPage, state.currentPage * state.itemsPerPage);
                 
                 if (filtered.length === 0) {
-                    tbody.innerHTML = `<tr><td colspan="${listFieldDefinitions.length}" class="p-8 text-center text-gray-400">目前無資料，請點擊新增案件</td></tr>`;
+                    tbody.innerHTML = `<tr><td colspan="${state.batchDeleteMode ? listFieldDefinitions.length + 1 : listFieldDefinitions.length}" class="p-8 text-center text-gray-400">目前無資料，請點擊新增案件</td></tr>`;
                 } else {
                     tbody.innerHTML = currentRecords.map(r => {
                         const { isPaid, isOverdue } = getPaymentStatus(r);
@@ -2080,8 +2401,14 @@
                         const statusLbl = getStatusLabel(r.status);
                         const isBadDebt = r.status === '3';
                         const isClosedBadDebt = r.status === '4';
+                        
+                        // 批次選擇模式的checkbox欄位
+                        const batchSelectCell = state.batchDeleteMode ? 
+                            `<td class="py-2 px-2 text-center select-checkbox" style="min-width: 40px; max-width: 40px; position: sticky; left: 0; z: 20; background-color: white; border-right: 1px solid #e5e7eb;">
+                                <input type="checkbox" ${state.selectedCasesForBatch.includes(r.id) ? 'checked' : ''} onclick="window.toggleSelectCaseForBatch('${r.id}')" class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                            </td>` : '';
 
-                        return `<tr class="hover:bg-gray-50 transition-colors">` + listFieldDefinitions.map((field, idx) => {
+                        const regularCells = listFieldDefinitions.map((field, idx) => {
                             let content = '';
                             let val = r[field.key];
                             
@@ -2115,7 +2442,6 @@
                                 }
 
                             } else if (field.isAction) {
-                                // 移除AI相關按鈕
                                 content = `<div class="flex space-x-2 justify-center items-center"><button onclick="window.startEdit('${r.id}')" class="text-blue-600 hover:text-blue-800 bg-blue-50 p-1 rounded" title="編輯"><i data-lucide="edit-2" class="w-4 h-4"></i></button><button onclick="window.handleDelete('${r.id}')" class="text-red-600 hover:text-red-800 bg-red-50 p-1 rounded" title="刪除整筆案件"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div>`;
                             } else if (field.key === 'status') {
                                 content = `<span class="px-2 py-1 rounded text-xs ${statusLbl.color}">${statusLbl.text}</span>`;
@@ -2142,13 +2468,14 @@
                             if (field.key === 'paymentStatus' && isOverdue && !isBadDebt) stickyClass = stickyClass.replace('bg-white', 'bg-emerald-100');
 
                             return `<td class="py-2 px-2 text-xs text-center ${field.font || ''} ${stickyClass}" style="${style}" title="${val||''}">${content}</td>`;
-                        }).join('') + `</tr>`;
+                        }).join('');
+
+                        return `<tr class="hover:bg-gray-50 transition-colors">${batchSelectCell}${regularCells}</tr>`;
                     }).join('');
                 }
                 lucide.createIcons();
             }
             
-            // 生成手機版卡片
             if (mobileContainer) {
                 mobileContainer.innerHTML = generateMobileCardsHtml();
                 lucide.createIcons();
@@ -2162,21 +2489,19 @@
                     sourceRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
                 }
                 
-                // 使用新的搜尋邏輯
                 const searchTerm = state.searchTerm.toLowerCase();
                 let filtered = sourceRecords.filter(r => 
                     (r.borrower?.toLowerCase().includes(searchTerm) || 
                      r.displayId?.toLowerCase().includes(searchTerm))
                 );
                 
-                // ========== 修正：按照放款日期排序 ==========
+                // 修正排序邏輯
                 filtered.sort((a, b) => {
-                    const dateA = new Date(a.date || '9999-12-31');
-                    const dateB = new Date(b.date || '9999-12-31');
-                    return dateA - dateB; // 升序排序
+                    const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                    const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                    return dateA - dateB;
                 });
                 
-                // 套用未繳篩選
                 if (state.unpaidFilter === 'all_unpaid') {
                     filtered = filtered.filter(r => {
                         const { isPaid } = getPaymentStatus(r);
@@ -2189,6 +2514,11 @@
                     });
                 }
                 
+                // 新增：篩選狀態1和2的案件
+                if (state.activeCasesFilter) {
+                    filtered = filtered.filter(r => r.status === '1' || r.status === '2');
+                }
+                
                 const totalPages = Math.ceil(filtered.length / state.itemsPerPage) || 1;
                 
                 paginationInfo.textContent = `第 ${state.currentPage} 頁 / 共 ${totalPages} 頁 (共 ${filtered.length} 筆)`;
@@ -2197,7 +2527,6 @@
                 btnNext.disabled = state.currentPage >= totalPages || filtered.length === 0;
                 btnLast.disabled = state.currentPage >= totalPages || filtered.length === 0;
                 
-                // 更新頁碼輸入框
                 pageInput.value = state.currentPage;
                 pageInput.max = totalPages;
                 pageInput.min = 1;
@@ -2339,15 +2668,18 @@
                                 </div>
                             </div>
                         </div>
-                        <!-- 移除AI財務顧問區塊 -->
                     </div>
                 </div>
             </div>`; 
         }
 
-        // 修改 renderList 函數以支援手機版
         function renderList() {
-            // Generate header separately
+            // 批次刪除模式下的表頭
+            const batchDeleteHeader = state.batchDeleteMode ? 
+                `<th class="p-2 font-semibold text-gray-700 text-sm whitespace-nowrap text-center sticky top-0 z-40 bg-gray-50 border-r border-gray-300" style="min-width: 40px; width: 40px; left: 0;">
+                    <input type="checkbox" onclick="window.selectAllVisibleCasesForBatch()" ${state.selectedCasesForBatch.length > 0 ? 'checked' : ''} class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                </th>` : '';
+            
             const headerHtml = listFieldDefinitions.map((field, idx) => {
                 let stickyClass = '';
                 let style = `min-width: ${field.widthVal}px; width: ${field.widthVal}px;`;
@@ -2362,12 +2694,39 @@
                 return `<th class="p-2 font-semibold text-gray-700 text-sm whitespace-nowrap text-center ${stickyClass}" style="${style}">${field.label}</th>`;
             }).join('');
 
+            // 批次刪除模式的控制面板
+            const batchDeletePanel = state.batchDeleteMode ? 
+                `<div class="mb-4 bg-red-50 border border-red-200 rounded-lg p-4 flex flex-col sm:flex-row justify-between items-center">
+                    <div class="flex items-center mb-2 sm:mb-0">
+                        <div class="w-10 h-10 flex items-center justify-center bg-red-100 text-red-600 rounded-full mr-3">
+                            <i data-lucide="trash-2" class="w-5 h-5"></i>
+                        </div>
+                        <div>
+                            <h3 class="font-bold text-red-800">批次刪除模式</h3>
+                            <p class="text-sm text-red-600">已選取 <span class="font-bold">${state.selectedCasesForBatch.length}</span> 筆案件</p>
+                        </div>
+                    </div>
+                    <div class="flex space-x-2">
+                        <button onclick="window.selectAllVisibleCasesForBatch()" class="px-4 py-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 flex items-center text-sm font-bold">
+                            <i data-lucide="check-square" class="w-4 h-4 mr-2"></i>
+                            ${state.selectedCasesForBatch.length > 0 ? '取消全選' : '全選本頁'}
+                        </button>
+                        <button onclick="window.executeBatchDelete()" ${state.selectedCasesForBatch.length === 0 ? 'disabled' : ''} class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center text-sm font-bold disabled:opacity-50 disabled:cursor-not-allowed">
+                            <i data-lucide="trash-2" class="w-4 h-4 mr-2"></i>
+                            刪除選取案件 (${state.selectedCasesForBatch.length}筆)
+                        </button>
+                        <button onclick="window.toggleBatchDeleteMode()" class="px-4 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 flex items-center text-sm font-bold">
+                            <i data-lucide="x" class="w-4 h-4 mr-2"></i>
+                            取消
+                        </button>
+                    </div>
+                </div>` : '';
+
             return `
             <div class="flex flex-col h-[calc(100vh-6rem)] animate-fade-in space-y-4">
                 <header class="flex flex-col sm:flex-row justify-between items-center gap-4 shrink-0 bg-slate-100 pt-2 pb-2 z-10">
                     <h2 class="text-2xl font-bold text-gray-800">案件資料列表</h2>
                     <div class="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2 items-center w-full sm:w-auto">
-                        <!-- 修改點8: 更新未繳案件篩選按鈕 -->
                         <div class="flex space-x-2 w-full sm:w-auto">
                             <button onclick="window.filterUnpaidCases('all_unpaid')" class="bg-red-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-red-700 flex items-center shadow-sm ${state.unpaidFilter === 'all_unpaid' ? 'ring-2 ring-red-300' : ''}">
                                 <i data-lucide="alert-circle" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">所有未繳</span>
@@ -2375,7 +2734,10 @@
                             <button onclick="window.filterUnpaidCases('current_unpaid')" class="bg-amber-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-amber-700 flex items-center shadow-sm ${state.unpaidFilter === 'current_unpaid' ? 'ring-2 ring-amber-300' : ''}">
                                 <i data-lucide="alert-triangle" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">逾期未繳</span>
                             </button>
-                            <button onclick="window.showAllCases()" class="bg-gray-500 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-gray-600 flex items-center shadow-sm">
+                            <button onclick="window.showActiveCases()" class="bg-blue-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-blue-700 flex items-center shadow-sm ${state.activeCasesFilter ? 'ring-2 ring-blue-300' : ''}">
+                                <i data-lucide="list-checks" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">所有未結案</span>
+                            </button>
+                            <button onclick="window.showAllCases()" class="bg-gray-500 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-gray-600 flex items-center shadow-sm ${!state.unpaidFilter && !state.activeCasesFilter ? 'ring-2 ring-gray-300' : ''}">
                                 <i data-lucide="database" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">全部案件</span>
                             </button>
                         </div>
@@ -2386,15 +2748,17 @@
                                 <input type="text" id="searchInput" placeholder="搜尋編號、姓名..." value="${state.searchTerm}" class="w-full pl-10 pr-4 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" oninput="window.handleSearch(this.value)">
                             </div>
                             
-                            <!-- NEW: CSV Import Button and Hidden Input -->
                             <input type="file" id="csvFileInput" accept=".csv" class="hidden" onchange="window.handleFileChange(event)" />
                             <button onclick="window.handleFileSelect()" class="bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-700 flex items-center shadow-sm disabled:opacity-50 text-sm" ${state.isImporting ? 'disabled' : ''} title="匯入垂直格式報表">
                                 <i data-lucide="upload" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">匯入 CSV</span>
                             </button>
                             
-                            <!-- NEW: Excel Export Button -->
                             <button onclick="window.exportToExcel()" class="bg-teal-600 text-white px-3 py-2 rounded-lg hover:bg-teal-700 flex items-center shadow-sm whitespace-nowrap text-sm" title="匯出垂直格式報表（與匯入格式相同）">
                                 <i data-lucide="download" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">匯出 CSV</span>
+                            </button>
+
+                            <button onclick="window.toggleBatchDeleteMode()" class="bg-red-600 text-white px-3 py-2 rounded-lg hover:bg-red-700 flex items-center shadow-sm text-sm ${state.batchDeleteMode ? 'ring-2 ring-red-300' : ''}">
+                                <i data-lucide="trash-2" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">批次刪除</span>
                             </button>
 
                             <button onclick="window.openNewForm()" class="bg-emerald-600 text-white px-3 py-2 rounded-lg hover:bg-emerald-700 flex items-center shadow-sm text-sm">
@@ -2403,33 +2767,34 @@
                         </div>
                     </div>
                 </header>
-                <div class="bg-white rounded-xl shadow-sm border border-gray-200 flex-1 flex flex-col overflow-hidden relative">
-                    <!-- 桌面版表格 -->
+                
+                ${batchDeletePanel}
+                
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 flex-1 flex flex-col overflow-hidden relative ${state.batchDeleteMode ? 'batch-selection-mode' : ''}">
                     <div class="desktop-table-view flex-1 overflow-auto relative custom-scrollbar">
                         <table class="text-left border-collapse w-max">
                             <thead>
                                 <tr class="bg-gray-50 border-b border-gray-200">
+                                    ${batchDeleteHeader}
                                     ${headerHtml}
                                 </tr>
                             </thead>
                             <tbody id="loanListBody" class="divide-y divide-gray-100 text-sm">
-                                <!-- Rows will be injected here by refreshListUI() -->
                             </tbody>
                         </table>
                     </div>
                     
-                    <!-- 手機版卡片視圖 -->
                     <div id="mobileListContainer" class="mobile-card-view flex-1 overflow-y-auto p-4 custom-scrollbar">
-                        <!-- Mobile cards will be injected here -->
                     </div>
                     
-                    <!-- 修改點9: 改進分頁控件 -->
                     <div class="p-3 border-t border-gray-100 bg-gray-50 flex flex-col sm:flex-row justify-between items-center">
                         <div class="text-xs sm:text-sm text-gray-500 mb-2 sm:mb-0">
                             ${state.unpaidFilter === 'all_unpaid' ? 
                                 `<span class="font-bold text-red-600"><i data-lucide="alert-circle" class="w-3 h-3 inline mr-1"></i>所有未繳案件</span>` : 
                               state.unpaidFilter === 'current_unpaid' ? 
                                 `<span class="font-bold text-amber-600"><i data-lucide="alert-triangle" class="w-3 h-3 inline mr-1"></i>逾期未繳案件</span>` : 
+                              state.activeCasesFilter ?
+                                `<span class="font-bold text-blue-600"><i data-lucide="list-checks" class="w-3 h-3 inline mr-1"></i>所有未結案 (狀態1+2)</span>` :
                               '全部案件'}
                         </div>
                         <div class="flex items-center space-x-1">
@@ -2459,12 +2824,21 @@
         }
 
         function renderUserManagement() {
-             // 修改：添加刪除按鈕
              return `<div class="max-w-6xl mx-auto animate-fade-in">
                 <header class="mb-6">
                     <h2 class="text-2xl font-bold text-gray-800">用戶權限管理</h2>
                     <p class="text-sm text-gray-500">僅管理員可見，設定誰可以使用「代管」功能，並管理用戶帳號。</p>
                 </header>
+                
+                <div class="mb-4 flex justify-end space-x-2">
+                    <button onclick="window.cleanupOrphanedCases()" class="px-4 py-2 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 flex items-center text-sm font-bold">
+                        <i data-lucide="trash-2" class="w-4 h-4 mr-2"></i>清理無主案件
+                    </button>
+                    <button onclick="window.renumberAllUsersCases()" class="px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 flex items-center text-sm font-bold">
+                        <i data-lucide="list-ordered" class="w-4 h-4 mr-2"></i>重新編號所有案件
+                    </button>
+                </div>
+                
                 <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                     <table class="w-full text-left">
                         <thead class="bg-gray-50 text-gray-500 text-xs uppercase">
@@ -2517,6 +2891,8 @@
                         <li>• 刪除帳號會同時刪除該用戶的所有貸款記錄</li>
                         <li>• 無法刪除自己的帳號</li>
                         <li>• 刪除操作無法復原，請謹慎操作</li>
+                        <li>• 「清理無主案件」會刪除所有沒有對應用戶的案件</li>
+                        <li>• 「重新編號所有案件」會按照放款日期重新排序每個用戶的案件編號</li>
                     </ul>
                 </div>
             </div>`;
@@ -2526,7 +2902,6 @@
              const isEdit = !!state.editingRecord; 
              const calc = calculateDerivedData(formData);
              
-             // 檢查是否可以使用狀態2
              const canUseStatus2 = state.allowedStatus.includes('2');
              
              return `<div class="max-w-5xl mx-auto bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden animate-fade-in flex flex-col h-[calc(100vh-6rem)]"><div class="px-4 py-3 border-b border-gray-200 flex justify-between items-center bg-gray-50 shrink-0"><h3 class="font-bold text-gray-800 flex items-center"><i data-lucide="${isEdit ? 'edit-2' : 'plus'}" class="w-4 h-4 mr-2"></i> ${isEdit ? '編輯案件' : '新增案件'}</h3><button onclick="window.setActiveTab('list')" class="text-gray-400 hover:text-gray-600"><i data-lucide="x" class="w-5 h-5"></i></button></div>
@@ -2564,11 +2939,8 @@
         }
 
         function renderRepayment() { 
-            // 根據用戶權限篩選案件
             let repaymentCases = state.records.filter(r => {
-                // 只顯示進行中案件
                 if (r.status === '1') return true;
-                // 只有有狀態2權限的用戶能看到代管案件
                 if (r.status === '2' && state.allowedStatus.includes('2')) return true;
                 return false;
             });
@@ -2594,7 +2966,6 @@
                 else if (state.activeTab === 'repayment') content = renderRepayment();
                 else if (state.activeTab === 'admin') content = renderUserManagement();
 
-                // Modals...
                 let modalHtml = '';
                 
                 if (state.activeModal.type) {
@@ -2603,18 +2974,13 @@
                 }
                 if (state.modalType) {
                     let filteredRecs = [];
-                    // Filter based on modal type AND current user view (admin/user)
-                    // We reuse calculateStats() logic which already respects viewingUid
                     const currentStats = calculateStats();
 
                     if (state.modalType === 'active') filteredRecs = currentStats.activeRecords;
                     else if (state.modalType === 'unpaid') filteredRecs = currentStats.unpaidRecords;
                     else if (state.modalType === 'closed') filteredRecs = currentStats.closedRecords;
                     else if (state.modalType === 'badDebt') filteredRecs = currentStats.badDebtCases;
-                    // For card clicks that don't have direct arrays in stats, we must filter manually
-                    // But we must respect permissions
                     else {
-                        // Base set of records to filter from
                         let baseRecords = state.records;
                         if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
                             baseRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
@@ -2661,16 +3027,15 @@
                         else filteredRecs = baseRecords.filter(r => r.status === '1' || r.status === '2');
                     }
                     
-                    // 修改點10: 卡片點擊列表按放款日期排序
+                    // 修正：在模態視窗中也按日期排序
                     filteredRecs.sort((a, b) => {
-                        const dateA = new Date(a.date || '9999-12-31');
-                        const dateB = new Date(b.date || '9999-12-31');
+                        const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                        const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
                         return dateA - dateB;
                     });
                     
                     let customHeaders = ''; let customRowBuilder = null;
 
-                    // Default
                     customHeaders = `<tr><th class="p-2">借款人</th><th class="p-2 text-right">欠款</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr>`;
                     customRowBuilder = (r, calc, status) => `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId || r.caseNumber || ''})</span></td><td class="p-2 text-right text-red-600 font-mono">${formatNumber(calc.arrears)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td><td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td></tr>`;
                     
@@ -2755,7 +3120,6 @@
 
                 app.innerHTML = `<div class="flex h-screen bg-slate-100 font-sans text-gray-800"><div class="w-20 sm:w-64 bg-slate-900 text-white flex flex-col justify-between fixed h-full z-20 transition-all duration-300"><div><div class="p-6 flex items-center justify-center sm:justify-start border-b border-slate-700"><i data-lucide="wallet" class="w-8 h-8 text-emerald-400 mr-0 sm:mr-3"></i><span class="hidden sm:block text-xl font-bold tracking-wider">借貸管理</span></div><div class="px-6 py-4 flex items-center border-b border-slate-800 mb-2"><div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold mr-3 ${state.isDemoMode ? 'bg-amber-500' : 'bg-slate-700'}">${state.isDemoMode ? 'T' : (state.currentUser ? state.currentUser.substring(0, 2).toUpperCase() : 'U')}</div><div class="hidden sm:block"><p class="text-xs text-slate-400">${state.isDemoMode ? "試用模式" : "已登入"}</p><p class="text-sm font-bold text-white truncate w-32">${state.isDemoMode ? "訪客 (不儲存)" : state.currentUser}</p></div></div><nav class="mt-4 px-4 space-y-2"><button onclick="window.setActiveTab('dashboard')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab === 'dashboard' ? 'bg-emerald-600' : 'hover:bg-slate-800'}"><i data-lucide="layout-dashboard" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">營運報表</span></button><button onclick="window.setActiveTab('list')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab === 'list' ? 'bg-emerald-600' : 'hover:bg-slate-800'}"><i data-lucide="database" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">案件列表</span></button><button onclick="window.setActiveTab('repayment')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab === 'repayment' ? 'bg-emerald-600' : 'hover:bg-slate-800'}"><i data-lucide="banknote" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">還款輸入</span></button>${state.isAdmin ? `<button onclick="window.setActiveTab('admin')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab === 'admin' ? 'bg-emerald-600' : 'hover:bg-slate-800'}"><i data-lucide="users" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">用戶管理</span></button>` : ''}</nav></div><div class="p-4 border-t border-slate-700 space-y-2"><button onclick="window.handleLogout()" class="w-full flex items-center justify-center sm:justify-start p-3 rounded-lg text-slate-400 hover:bg-red-900/30 hover:text-red-400 transition-colors"><i data-lucide="log-out" class="w-5 h-5 mr-0 sm:mr-2"></i><span class="hidden sm:block font-medium">登出系統</span></button></div></div><div class="flex-1 ml-20 sm:ml-64 p-4 sm:p-8 overflow-x-hidden">${content}</div>${modalHtml}</div>`;
                 
-                // Initialize Rows if on List Tab
                 if (state.activeTab === 'list') {
                     window.refreshListUI();
                 }
@@ -2771,39 +3135,29 @@
                     state.currentUserUid = user.uid;
                     state.isDemoMode = false;
                     
-                    // 修改：登入後預設檢視自己的資料
                     if (state.viewingUid === null) {
                         state.viewingUid = user.uid;
                     }
                     
-                    // --- REVISED: Use onSnapshot for real-time permission updates and self-healing ---
-                    
-                    // 1. Listen to user directory for permissions (and all users if admin)
                     onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'user_directory'), async (snap) => {
                         const allUsers = snap.docs.map(d => d.data());
                         state.usersDirectory = allUsers;
                         
-                        // Find current user's role
                         const myProfile = allUsers.find(u => u.uid === state.currentUserUid);
                         
                         if (myProfile) {
                             const newIsAdmin = myProfile.role === 'admin';
                             
-                            // Only update and re-render if role changed
                             if (newIsAdmin !== state.isAdmin) {
                                 state.isAdmin = newIsAdmin;
                                 state.allowedStatus = myProfile.allowedStatus || ['0', '1', '3', '4'];
                                 renderApp();
                             } else {
                                 state.allowedStatus = myProfile.allowedStatus || ['0', '1', '3', '4'];
-                                // If already admin, we still might need to re-render if usersDirectory changed (for dropdown)
                                 if (state.isAdmin) renderApp();
                             }
                         }
 
-                        // ========== 修正：自愈邏輯 ==========
-                        // 如果系統中只有一個用戶，且該用戶不是管理員，則將其提升為管理員
-                        // 但如果有管理員存在，則不執行此操作
                         if (allUsers.length === 1 && myProfile && myProfile.role !== 'admin') {
                             console.log("Self-healing: Promoting single user to admin...");
                             try {
@@ -2815,7 +3169,6 @@
                                 console.error("Self-healing failed:", e);
                             }
                         } else if (allUsers.length > 1 && myProfile && myProfile.role === 'admin') {
-                            // 確保系統中只有一個管理員
                             const adminCount = allUsers.filter(u => u.role === 'admin').length;
                             if (adminCount > 1) {
                                 console.warn(`系統中有 ${adminCount} 個管理員，建議只保留一個`);
@@ -2823,25 +3176,53 @@
                         }
                     });
 
-                    // 2. Listen to Loan Records (Always listen to all, filter in UI for smooth switching)
                     if (!state.isLoadingListener) {
-                        // 修改查詢，按日期排序
                         const q = query(
                             collection(db, 'artifacts', appId, 'public', 'data', 'loan_records'), 
                             orderBy('date', 'asc')
                         );
                         onSnapshot(q, (snapshot) => {
-                              const docs = snapshot.docs.map((doc, index) => {
-                                  const data = doc.data();
-                                  const displayId = data.caseNumber || formatCaseId(index + 1);
-                                  return { id: doc.id, ...data, displayId };
-                              });
-                              updateState({ records: docs });
+                            // 修正：按用戶分組並排序，確保每個用戶的編號正確
+                            const usersRecords = {};
+                            
+                            snapshot.docs.forEach(doc => {
+                                const data = doc.data();
+                                const uid = data.ownerUid;
+                                if (!usersRecords[uid]) usersRecords[uid] = [];
+                                usersRecords[uid].push({ id: doc.id, ...data });
+                            });
+                            
+                            // 對每個用戶的記錄按照日期排序
+                            Object.keys(usersRecords).forEach(uid => {
+                                usersRecords[uid].sort((a, b) => {
+                                    const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                                    const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                                    return dateA - dateB;
+                                });
+                            });
+                            
+                            // 生成每個用戶的編號，並合併成一個數組
+                            const docs = [];
+                            Object.keys(usersRecords).forEach(uid => {
+                                const userRecords = usersRecords[uid];
+                                userRecords.forEach((record, index) => {
+                                    const displayId = record.caseNumber || formatCaseId(index + 1, uid);
+                                    docs.push({ ...record, displayId });
+                                });
+                            });
+                            
+                            // 然後，我們可以按照日期對所有記錄進行排序，以便在列表頁面中默認按照日期排序
+                            docs.sort((a, b) => {
+                                const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                                const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                                return dateA - dateB;
+                            });
+                            
+                            updateState({ records: docs });
                         });
                         state.isLoadingListener = true;
                     }
                 } else {
-                    // 完全重置狀態，強制顯示登入畫面
                     updateState({ 
                         currentUser: null, 
                         currentUserUid: null,
@@ -2871,18 +3252,18 @@
                         tempScheduleLines: [],
                         isLoadingListener: false,
                         isImporting: false,
-                        unpaidFilter: null
+                        unpaidFilter: null,
+                        batchDeleteMode: false,
+                        selectedCasesForBatch: [],
+                        activeCasesFilter: false
                     });
                     
-                    // 清空表單資料
                     formData = { ...initialFormState };
                     
-                    // 特別注意：清除任何可能存在的登入快取
                     if (typeof sessionStorage !== 'undefined') {
                         sessionStorage.removeItem('firebase:authUser:' + firebaseConfig.apiKey + ':' + appId);
                     }
                     
-                    // 清除搜尋輸入框
                     setTimeout(() => {
                         const searchInput = document.getElementById('searchInput');
                         if (searchInput) searchInput.value = '';
