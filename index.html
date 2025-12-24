@@ -21,8 +21,29 @@
         .animate-fade-in { animation: fadeIn 0.3s ease-in-out; }
         
         /* Drag and Drop Styles */
-        .draggable-card { cursor: grab; }
-        .draggable-card:active { cursor: grabbing; }
+        .draggable-card { 
+            cursor: grab; 
+            position: absolute;
+            transition: transform 0.2s, box-shadow 0.2s;
+            touch-action: none;
+        }
+        .draggable-card:active { 
+            cursor: grabbing;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+            z-index: 100;
+        }
+        
+        /* Dashboard Container for Free Positioning */
+        .dashboard-container {
+            position: relative;
+            width: 100%;
+            height: 500px;
+            min-height: 500px;
+            background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+            border-radius: 1rem;
+            border: 2px dashed #cbd5e1;
+            overflow: hidden;
+        }
         
         /* Table Styles */
         th, td { vertical-align: middle; }
@@ -215,6 +236,20 @@
                 position: relative;
                 padding-left: 2.5rem;
             }
+
+            /* 手機版儀表板調整 */
+            .dashboard-container {
+                height: 400px;
+                min-height: 400px;
+            }
+            
+            .draggable-card {
+                width: 100% !important;
+                position: relative !important;
+                left: 0 !important;
+                top: 0 !important;
+                margin-bottom: 1rem;
+            }
         }
         
         @media (min-width: 769px) {
@@ -359,18 +394,18 @@
 
         // --- Global State ---
         const initialCardLayout = [
-            { id: 'totalIncome', label: "總收入 (累計)", type: "primary", icon: "wallet", isCurrency: true, width: 2 },
-            { id: 'creditAmount', label: "債權總額", type: "primary", icon: "file-text", isCurrency: true, width: 1 },
-            { id: 'outstanding', label: "在外本金", type: "warning", icon: "dollar-sign", isCurrency: true, width: 1 },
-            { id: 'currentLent', label: "目前放款額", type: "warning", icon: "credit-card", isCurrency: true, width: 1 },
-            { id: 'monthDue', label: "本月應收款", type: "primary", icon: "credit-card", compact: true, isCurrency: true, width: 1 },
-            { id: 'monthCollected', label: "本月已收款", type: "primary", icon: "check", compact: true, isCurrency: true, width: 1 },
-            { id: 'monthDiff', label: "本月款差", type: "critical", icon: "alert-circle", compact: true, isCurrency: true, width: 1 },
-            { id: 'monthInterestDiff', label: "本月息差", type: "critical", icon: "alert-circle", compact: true, isCurrency: true, width: 1 },
-            { id: 'monthInterestDue', label: "本月應收息", type: "primary", icon: "trending-up", compact: true, isCurrency: true, width: 1 },
-            { id: 'monthInterestCollected', label: "本月已收息", type: "primary", icon: "check", compact: true, isCurrency: true, width: 1 },
-            { id: 'totalManagementFee', label: "本月管理費", type: "primary", icon: "credit-card", isCurrency: true, width: 1 },
-            { id: 'badDebtAmount', label: "呆帳金額", type: "critical", icon: "x", isCurrency: true, width: 1 }
+            { id: 'totalIncome', label: "總收入 (累計)", type: "primary", icon: "wallet", isCurrency: true, width: 250, height: 120, x: 20, y: 20 },
+            { id: 'creditAmount', label: "債權總額", type: "primary", icon: "file-text", isCurrency: true, width: 250, height: 120, x: 290, y: 20 },
+            { id: 'outstanding', label: "在外本金", type: "warning", icon: "dollar-sign", isCurrency: true, width: 250, height: 120, x: 560, y: 20 },
+            { id: 'currentLent', label: "目前放款額", type: "warning", icon: "credit-card", isCurrency: true, width: 250, height: 120, x: 20, y: 160 },
+            { id: 'monthDue', label: "本月應收款", type: "primary", icon: "credit-card", compact: true, isCurrency: true, width: 250, height: 100, x: 290, y: 160 },
+            { id: 'monthCollected', label: "本月已收款", type: "primary", icon: "check", compact: true, isCurrency: true, width: 250, height: 100, x: 560, y: 160 },
+            { id: 'monthDiff', label: "本月款差", type: "critical", icon: "alert-circle", compact: true, isCurrency: true, width: 250, height: 100, x: 20, y: 280 },
+            { id: 'monthInterestDiff', label: "本月息差", type: "critical", icon: "alert-circle", compact: true, isCurrency: true, width: 250, height: 100, x: 290, y: 280 },
+            { id: 'monthInterestDue', label: "本月應收息", type: "primary", icon: "trending-up", compact: true, isCurrency: true, width: 250, height: 100, x: 560, y: 280 },
+            { id: 'monthInterestCollected', label: "本月已收息", type: "primary", icon: "check", compact: true, isCurrency: true, width: 250, height: 100, x: 20, y: 400 },
+            { id: 'totalManagementFee', label: "本月管理費", type: "primary", icon: "credit-card", isCurrency: true, width: 250, height: 120, x: 290, y: 400 },
+            { id: 'badDebtAmount', label: "呆帳金額", type: "critical", icon: "x", isCurrency: true, width: 250, height: 120, x: 560, y: 400 }
         ];
         
         // --- 核心欄位定義 ---
@@ -414,7 +449,7 @@
             authLoading: false,
             activeTab: 'dashboard',
             records: [],
-            cardLayout: initialCardLayout, 
+            cardLayout: JSON.parse(localStorage.getItem('cardLayout')) || initialCardLayout, // 從 localStorage 讀取佈局
             editingRecord: null,
             searchTerm: '',
             repaymentSearchTerm: '',
@@ -436,6 +471,10 @@
             batchDeleteMode: false,
             selectedCasesForBatch: [],
             activeCasesFilter: false, // 新增：是否顯示狀態1和2的案件
+            
+            // 新增：拖放相關狀態
+            draggingCard: null,
+            dragOffset: { x: 0, y: 0 }
         };
 
         // Demo Data
@@ -468,73 +507,9 @@
             return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
         };
         
-        // 修正：案件編號格式化，每個用戶獨立計算
-        const formatCaseId = (num, ownerUid = null) => {
-            // 如果是demo模式或沒有ownerUid，直接格式化
-            if (!ownerUid || ownerUid === 'demo') {
-                return `#${String(num).padStart(3, '0')}`;
-            }
-            // 正常模式：使用用戶UID的前4個字元作為前綴，確保每個用戶編號獨立
-            const prefix = ownerUid.substring(0, 4).toUpperCase();
-            return `${prefix}-${String(num).padStart(3, '0')}`;
-        };
-        
-        // 修正：重新計算用戶的案件編號
-        const renumberUserCases = async (uid) => {
-            if (!uid || uid === 'demo') return;
-            
-            try {
-                // 查詢該用戶的所有案件，按放款日期排序
-                const q = query(
-                    collection(db, 'artifacts', appId, 'public', 'data', 'loan_records'),
-                    where('ownerUid', '==', uid),
-                    orderBy('date', 'asc')
-                );
-                
-                const querySnapshot = await getDocs(q);
-                const batch = writeBatch(db);
-                
-                querySnapshot.docs.forEach((docSnap, index) => {
-                    const newCaseNumber = formatCaseId(index + 1, uid);
-                    batch.update(docSnap.ref, { 
-                        caseNumber: newCaseNumber,
-                        displayId: newCaseNumber
-                    });
-                });
-                
-                await batch.commit();
-                console.log(`用戶 ${uid} 的案件已重新編號，共 ${querySnapshot.docs.length} 筆`);
-            } catch (error) {
-                console.error("重新編號失敗:", error);
-            }
-        };
-        
-        // 新增：重新編號所有用戶的案件
-        window.renumberAllUsersCases = async () => {
-            if (!state.isAdmin) {
-                window.showError("只有管理員可以重新編號案件");
-                return;
-            }
-
-            window.showConfirm("確定要重新編號所有用戶的案件嗎？這將會按照放款日期重新排序每個用戶的案件編號。此操作可能需要一些時間。", async (confirmed) => {
-                if (!confirmed) return;
-
-                showLoading(true, "正在重新編號所有用戶的案件...");
-
-                try {
-                    // 逐個用戶重新編號
-                    for (const user of state.usersDirectory) {
-                        await renumberUserCases(user.uid);
-                    }
-
-                    showLoading(false);
-                    window.showSuccess("所有用戶的案件已重新編號完成！");
-                } catch (error) {
-                    showLoading(false);
-                    console.error("重新編號所有用戶案件失敗:", error);
-                    window.showError(`重新編號失敗: ${error.message}`);
-                }
-            });
+        // 修正：案件編號格式化 - 動態生成，不儲存
+        const formatCaseId = (index) => {
+            return `#${String(index).padStart(3, '0')}`;
         };
         
         const extractDatesFromSchedule = (scheduleStr) => {
@@ -591,7 +566,7 @@
             }).filter(item => item.date !== null);
         };
 
-        // 修正：外在本金計算公式
+        // 修正：欠款計算公式 - 借款金額 - 每期本金累計
         const calculateDerivedData = (record) => {
             const loanAmount = Number(record.loanAmount) || 0; 
             const disbursed = Number(record.disbursed) || 0;
@@ -608,7 +583,7 @@
             if (record.status === '4') {
                 return {
                     outstanding: record.outstandingPrincipal !== undefined ? Number(record.outstandingPrincipal) : (disbursed - totalPrincipalPaid - totalInterestPaid),
-                    arrears: record.arrears !== undefined ? Number(record.arrears) : (loanAmount - totalPrincipalPaid - totalInterestPaid),
+                    arrears: record.arrears !== undefined ? Number(record.arrears) : (loanAmount - totalPrincipalPaid),
                     remainingTerms: '-', 
                     roiTerms: '-',
                     totalPrincipalPaid,
@@ -619,7 +594,7 @@
             if (record.status === '0' || record.status === '2') {
                 return { 
                     outstanding: 0,
-                    arrears: record.status === '0' ? 0 : (loanAmount - totalPrincipalPaid - totalInterestPaid),
+                    arrears: record.status === '0' ? 0 : (loanAmount - totalPrincipalPaid),
                     remainingTerms: '-', 
                     roiTerms: '-',
                     totalPrincipalPaid,
@@ -630,7 +605,8 @@
             let outstanding = disbursed - totalPrincipalPaid - totalInterestPaid; 
             if (outstanding < 0) outstanding = 0; 
 
-            let arrears = loanAmount - totalPrincipalPaid - totalInterestPaid; 
+            // 修正：欠款 = 借款金額 - 每期本金累計
+            let arrears = loanAmount - totalPrincipalPaid; 
 
             let remainingTerms = '-'; 
             let roiTerms = "-";
@@ -779,6 +755,10 @@
                         s.monthInterestDiff += termInterest;
                     }
                 } else if (r.status === '2') {
+                     s.activeCases++; s.activeRecords.push(r);
+                     const { isOverdue } = getPaymentStatus(r);
+                     if (isOverdue) { s.unpaidCount++; s.unpaidRecords.push(r); }
+                     
                      const { isPaid } = getPaymentStatus(r);
                      if (!isPaid) {
                         s.monthDiff += termInterest; 
@@ -807,7 +787,10 @@
         const getCardConfig = (id) => {
             const stats = calculateStats(); if (!stats) return null;
             const layoutItem = state.cardLayout.find(c => c.id === id);
-            const width = layoutItem ? layoutItem.width : 1;
+            const width = layoutItem ? layoutItem.width : 250;
+            const height = layoutItem ? layoutItem.height : 120;
+            const x = layoutItem ? layoutItem.x : 0;
+            const y = layoutItem ? layoutItem.y : 0;
             const config = {
                 totalIncome: { label: "總收入 (累計)", value: stats.totalIncome, type: "primary", icon: "wallet", isCurrency: true },
                 creditAmount: { label: "債權總額", value: stats.creditAmount, type: "primary", icon: "file-text", isCurrency: true },
@@ -823,15 +806,134 @@
                 badDebtAmount: { label: "呆帳金額", value: stats.badDebtAmount, type: "critical", icon: "x", isCurrency: true }
             };
             if (id === 'totalManagementFee' && !stats.hasManagedCases) return null;
-            return { ...config[id], width };
+            return { ...config[id], width, height, x, y };
         };
 
         window.setActiveTab = (tab) => updateState({ activeTab: tab, modalType: null });
         window.updateState = (updates) => updateState(updates);
-        window.handleDragStart = (e, id) => { e.dataTransfer.setData('cardId', id); };
-        window.handleDragOver = (e) => { e.preventDefault(); };
-        window.handleDrop = (e, targetId) => { e.preventDefault(); const sourceId = e.dataTransfer.getData('cardId'); if (sourceId && sourceId !== targetId) { const layout = [...state.cardLayout]; const fromIndex = layout.findIndex(c => c.id === sourceId); const toIndex = layout.findIndex(c => c.id === targetId); if (fromIndex !== -1 && toIndex !== -1) { const [moved] = layout.splice(fromIndex, 1); layout.splice(toIndex, 0, moved); updateState({ cardLayout: layout }); } } };
-        window.resizeCard = (e, id) => { e.stopPropagation(); const layout = state.cardLayout.map(c => { if (c.id === id) { return { ...c, width: c.width === 2 ? 1 : 2 }; } return c; }); updateState({ cardLayout: layout }); };
+        
+        // 修正：卡片自由拖放功能
+        window.startDragCard = (e, id) => {
+            e.preventDefault();
+            const card = e.currentTarget;
+            const rect = card.getBoundingClientRect();
+            
+            state.draggingCard = id;
+            state.dragOffset = {
+                x: e.clientX - rect.left,
+                y: e.clientY - rect.top
+            };
+            
+            document.addEventListener('mousemove', window.dragCard);
+            document.addEventListener('mouseup', window.stopDragCard);
+            document.addEventListener('touchmove', window.dragCardTouch, { passive: false });
+            document.addEventListener('touchend', window.stopDragCard);
+        };
+        
+        window.startDragCardTouch = (e, id) => {
+            e.preventDefault();
+            const touch = e.touches[0];
+            const card = e.currentTarget;
+            const rect = card.getBoundingClientRect();
+            
+            state.draggingCard = id;
+            state.dragOffset = {
+                x: touch.clientX - rect.left,
+                y: touch.clientY - rect.top
+            };
+            
+            document.addEventListener('touchmove', window.dragCardTouch, { passive: false });
+            document.addEventListener('touchend', window.stopDragCard);
+        };
+        
+        window.dragCard = (e) => {
+            if (!state.draggingCard) return;
+            
+            e.preventDefault();
+            const dashboard = document.querySelector('.dashboard-container');
+            if (!dashboard) return;
+            
+            const dashboardRect = dashboard.getBoundingClientRect();
+            const x = e.clientX - dashboardRect.left - state.dragOffset.x;
+            const y = e.clientY - dashboardRect.top - state.dragOffset.y;
+            
+            // 限制在儀表板範圍內
+            const maxX = dashboardRect.width - 250;
+            const maxY = dashboardRect.height - 120;
+            
+            const clampedX = Math.max(0, Math.min(x, maxX));
+            const clampedY = Math.max(0, Math.min(y, maxY));
+            
+            const layout = state.cardLayout.map(c => {
+                if (c.id === state.draggingCard) {
+                    return { ...c, x: clampedX, y: clampedY };
+                }
+                return c;
+            });
+            
+            updateState({ cardLayout: layout });
+        };
+        
+        window.dragCardTouch = (e) => {
+            if (!state.draggingCard) return;
+            
+            e.preventDefault();
+            const touch = e.touches[0];
+            const dashboard = document.querySelector('.dashboard-container');
+            if (!dashboard) return;
+            
+            const dashboardRect = dashboard.getBoundingClientRect();
+            const x = touch.clientX - dashboardRect.left - state.dragOffset.x;
+            const y = touch.clientY - dashboardRect.top - state.dragOffset.y;
+            
+            // 限制在儀表板範圍內
+            const maxX = dashboardRect.width - 250;
+            const maxY = dashboardRect.height - 120;
+            
+            const clampedX = Math.max(0, Math.min(x, maxX));
+            const clampedY = Math.max(0, Math.min(y, maxY));
+            
+            const layout = state.cardLayout.map(c => {
+                if (c.id === state.draggingCard) {
+                    return { ...c, x: clampedX, y: clampedY };
+                }
+                return c;
+            });
+            
+            updateState({ cardLayout: layout });
+        };
+        
+        window.stopDragCard = () => {
+            if (state.draggingCard) {
+                // 儲存佈局到 localStorage
+                localStorage.setItem('cardLayout', JSON.stringify(state.cardLayout));
+                state.draggingCard = null;
+                document.removeEventListener('mousemove', window.dragCard);
+                document.removeEventListener('mouseup', window.stopDragCard);
+                document.removeEventListener('touchmove', window.dragCardTouch);
+                document.removeEventListener('touchend', window.stopDragCard);
+            }
+        };
+        
+        window.resizeCard = (e, id) => { 
+            e.stopPropagation(); 
+            const layout = state.cardLayout.map(c => { 
+                if (c.id === id) { 
+                    return { ...c, width: c.width === 250 ? 350 : 250, height: c.height === 120 ? 140 : 120 }; 
+                } 
+                return c; 
+            }); 
+            updateState({ cardLayout: layout });
+            // 儲存佈局到 localStorage
+            localStorage.setItem('cardLayout', JSON.stringify(layout));
+        };
+        
+        window.resetDashboardLayout = () => {
+            updateState({ cardLayout: initialCardLayout });
+            localStorage.setItem('cardLayout', JSON.stringify(initialCardLayout));
+            window.showSuccess("儀表板佈局已重置為預設位置");
+        };
+        
         window.toggleAuthMode = () => { updateState({ isRegistering: !state.isRegistering }); };
         
         // 修正：Auth流程
@@ -930,7 +1032,7 @@
                 authLoading: false,
                 activeTab: 'dashboard',
                 records: [],
-                cardLayout: initialCardLayout,
+                cardLayout: JSON.parse(localStorage.getItem('cardLayout')) || initialCardLayout,
                 editingRecord: null,
                 searchTerm: '',
                 repaymentSearchTerm: '',
@@ -949,7 +1051,9 @@
                 unpaidFilter: null,
                 batchDeleteMode: false,
                 selectedCasesForBatch: [],
-                activeCasesFilter: false
+                activeCasesFilter: false,
+                draggingCard: null,
+                dragOffset: { x: 0, y: 0 }
             });
             
             formData = { ...initialFormState };
@@ -1005,12 +1109,12 @@
             if (state.unpaidFilter === 'all_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid } = getPaymentStatus(r);
-                    return r.status === '1' && !isPaid;
+                    return (r.status === '1' || r.status === '2') && !isPaid;
                 });
             } else if (state.unpaidFilter === 'current_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid, isOverdue } = getPaymentStatus(r);
-                    return r.status === '1' && !isPaid && isOverdue;
+                    return (r.status === '1' || r.status === '2') && !isPaid && isOverdue;
                 });
             }
             
@@ -1048,12 +1152,12 @@
             if (state.unpaidFilter === 'all_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid } = getPaymentStatus(r);
-                    return r.status === '1' && !isPaid;
+                    return (r.status === '1' || r.status === '2') && !isPaid;
                 });
             } else if (state.unpaidFilter === 'current_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid, isOverdue } = getPaymentStatus(r);
-                    return r.status === '1' && !isPaid && isOverdue;
+                    return (r.status === '1' || r.status === '2') && !isPaid && isOverdue;
                 });
             }
             
@@ -1136,12 +1240,12 @@
             if (state.unpaidFilter === 'all_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid } = getPaymentStatus(r);
-                    return r.status === '1' && !isPaid;
+                    return (r.status === '1' || r.status === '2') && !isPaid;
                 });
             } else if (state.unpaidFilter === 'current_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid, isOverdue } = getPaymentStatus(r);
-                    return r.status === '1' && !isPaid && isOverdue;
+                    return (r.status === '1' || r.status === '2') && !isPaid && isOverdue;
                 });
             }
             
@@ -1204,24 +1308,8 @@
                         // Demo模式：從本地記錄中刪除
                         state.records = state.records.filter(r => !state.selectedCasesForBatch.includes(r.id));
                         
-                        // 重新排序並編號demo用戶的案件
-                        const demoRecords = state.records.filter(r => r.ownerUid === 'demo');
-                        const sorted = demoRecords.sort((a, b) => {
-                            const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
-                            const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
-                            return dateA - dateB;
-                        });
-                        
-                        sorted.forEach((record, index) => {
-                            record.caseNumber = formatCaseId(index + 1, 'demo');
-                            record.displayId = formatCaseId(index + 1, 'demo');
-                        });
-                        
-                        const otherRecords = state.records.filter(r => r.ownerUid !== 'demo');
-                        state.records = [...otherRecords, ...sorted];
-                        
                         showLoading(false);
-                        window.showSuccess(`已成功刪除 ${selectedCount} 筆案件，編號已重新排序。`);
+                        window.showSuccess(`已成功刪除 ${selectedCount} 筆案件。`);
                         
                         // 退出批次刪除模式
                         updateState({ 
@@ -1240,14 +1328,8 @@
                         
                         await batch.commit();
                         
-                        // 重新計算每個用戶的案件編號
-                        const affectedUsers = [...new Set(selectedRecords.map(r => r.ownerUid).filter(uid => uid))];
-                        for (const uid of affectedUsers) {
-                            await renumberUserCases(uid);
-                        }
-                        
                         showLoading(false);
-                        window.showSuccess(`已成功刪除 ${selectedCount} 筆案件，編號已重新排序。`);
+                        window.showSuccess(`已成功刪除 ${selectedCount} 筆案件。`);
                         
                         // 退出批次刪除模式
                         updateState({ 
@@ -1299,7 +1381,7 @@
             } 
         };
 
-        // 修正：儲存表單功能，確保案件編號正確
+        // 修正：儲存表單功能，不再需要編號邏輯
         window.handleSaveForm = async () => { 
             if (!state.currentUser && !state.isDemoMode) { 
                 window.showError("請先登入才能儲存資料。"); 
@@ -1318,28 +1400,10 @@
                     const newRec = { 
                         ...dataToSave, 
                         id: `new_${Date.now()}`, 
-                        caseNumber: '', 
                         createdAt: serverTimestamp(), 
                         ownerUid: 'demo' 
                     }; 
                     state.records.push(newRec); 
-                    
-                    // 重新排序並編號demo用戶的案件
-                    const demoRecords = state.records.filter(r => r.ownerUid === 'demo');
-                    const sorted = demoRecords.sort((a, b) => {
-                        const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
-                        const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
-                        return dateA - dateB;
-                    });
-                    
-                    sorted.forEach((record, index) => {
-                        record.caseNumber = formatCaseId(index + 1, 'demo');
-                        record.displayId = formatCaseId(index + 1, 'demo');
-                    });
-                    
-                    const otherRecords = state.records.filter(r => r.ownerUid !== 'demo');
-                    state.records = [...otherRecords, ...sorted];
-                    
                 } else { 
                     const idx = state.records.findIndex(r => r.id === state.editingRecord.id); 
                     if (idx !== -1) state.records[idx] = { ...state.records[idx], ...dataToSave }; 
@@ -1352,20 +1416,12 @@
                     dataToSave.createdAt = serverTimestamp(); 
                     dataToSave.ownerUid = state.currentUserUid;
                     
-                    // 先儲存案件
-                    const docRef = await addDoc(colRef, dataToSave);
+                    // 儲存案件
+                    await addDoc(colRef, dataToSave);
                     
-                    // 重新計算該用戶的案件編號
-                    await renumberUserCases(state.currentUserUid);
-                    
-                    window.showSuccess(`案件資料已成功新增，編號已按日期重新排序。`);
+                    window.showSuccess(`案件資料已成功新增。`);
                 } else { 
                     await updateDoc(doc(colRef, state.editingRecord.id), dataToSave);
-                    
-                    // 如果修改了日期，可能需要重新編號
-                    if (formData.date !== state.editingRecord.date) {
-                        await renumberUserCases(state.currentUserUid);
-                    }
                     
                     window.showSuccess(`案件資料已成功更新。`);
                 } 
@@ -1374,7 +1430,7 @@
             window.setActiveTab('list'); 
         };
         
-        // 修正：刪除功能，確保重新編號正確
+        // 修正：刪除功能，不再需要重新編號
         window.handleDelete = (id) => {
             window.showConfirm("確定要永久刪除此案件嗎？此操作無法復原。", async (confirmed) => {
                 if (!confirmed) return;
@@ -1385,41 +1441,18 @@
                     return;
                 }
                 
-                const ownerUid = recordToDelete.ownerUid;
-                
                 if (state.isDemoMode) {
                     // 刪除案件
                     state.records = state.records.filter(r => r.id !== id);
                     
-                    // 重新排序並編號demo用戶的案件
-                    const demoRecords = state.records.filter(r => r.ownerUid === 'demo');
-                    const sorted = demoRecords.sort((a, b) => {
-                        const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
-                        const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
-                        return dateA - dateB;
-                    });
-                    
-                    sorted.forEach((record, index) => {
-                        record.caseNumber = formatCaseId(index + 1, 'demo');
-                        record.displayId = formatCaseId(index + 1, 'demo');
-                    });
-                    
-                    const otherRecords = state.records.filter(r => r.ownerUid !== 'demo');
-                    state.records = [...otherRecords, ...sorted];
-                    
                     renderApp();
-                    window.showSuccess("案件已成功刪除，編號已重新排序。");
+                    window.showSuccess("案件已成功刪除。");
                 } else if (firebaseAvailable) {
                     try {
-                        // 先刪除文件
+                        // 刪除文件
                         await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'loan_records', id));
                         
-                        // 重新計算該用戶的案件編號
-                        if (ownerUid) {
-                            await renumberUserCases(ownerUid);
-                        }
-                        
-                        window.showSuccess("案件已成功刪除，編號已重新排序。");
+                        window.showSuccess("案件已成功刪除。");
                     } catch (e) {
                         console.error("刪除失敗:", e);
                         window.showError("刪除失敗，請檢查權限或連線。");
@@ -1719,22 +1752,6 @@
                 ];
             }
             
-            // 修正：確保demo模式也按日期排序
-            const demoRecords = state.records.filter(r => r.ownerUid === 'demo');
-            const sorted = demoRecords.sort((a, b) => {
-                const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
-                const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
-                return dateA - dateB;
-            });
-            
-            sorted.forEach((record, index) => {
-                record.caseNumber = formatCaseId(index + 1, 'demo');
-                record.displayId = formatCaseId(index + 1, 'demo');
-            });
-            
-            const otherRecords = state.records.filter(r => r.ownerUid !== 'demo');
-            state.records = [...otherRecords, ...sorted];
-            
             updateState({ 
                 isDemoMode: true, 
                 currentUser: 'Guest', 
@@ -1757,10 +1774,22 @@
             }
             
             const searchTerm = state.searchTerm.toLowerCase();
-            const filtered = sourceRecords.filter(r => 
+            let filtered = sourceRecords.filter(r => 
                 (r.borrower?.toLowerCase().includes(searchTerm) || 
                  r.displayId?.toLowerCase().includes(searchTerm))
             );
+            
+            // 排序並分配動態編號
+            filtered.sort((a, b) => {
+                const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
+                return dateA - dateB;
+            });
+            
+            // 分配動態編號
+            filtered.forEach((record, index) => {
+                record.dynamicIndex = index + 1;
+            });
             
             if (filtered.length === 0) {
                 window.showError("目前無資料可匯出");
@@ -1794,7 +1823,7 @@
                     
                     switch(fieldName) {
                         case '編號':
-                            value = record.displayId || record.caseNumber || '';
+                            value = formatCaseId(record.dynamicIndex);
                             break;
                         case '狀態':
                             value = getStatusLabel(record.status).text;
@@ -2117,23 +2146,8 @@
                 }));
                 state.records = [...state.records, ...demoRecords];
                 
-                const userRecords = state.records.filter(r => r.ownerUid === 'demo');
-                const sorted = userRecords.sort((a, b) => {
-                    const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
-                    const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
-                    return dateA - dateB;
-                });
-                
-                sorted.forEach((record, index) => {
-                    record.caseNumber = formatCaseId(index + 1, 'demo');
-                    record.displayId = formatCaseId(index + 1, 'demo');
-                });
-                
-                const otherRecords = state.records.filter(r => r.ownerUid !== 'demo');
-                state.records = [...otherRecords, ...sorted];
-                
                 showLoading(false);
-                window.showSuccess(`本地試用模式：成功匯入 ${records.length} 筆案件，編號已按日期重新排序。`);
+                window.showSuccess(`本地試用模式：成功匯入 ${records.length} 筆案件。`);
                 renderApp();
                 return;
             }
@@ -2148,19 +2162,13 @@
                         batch.set(newDocRef, {
                             ...record,
                             ownerUid: state.currentUserUid,
-                            // 修正：匯入時先給一個臨時編號，之後重新編號會更新
-                            caseNumber: '',
-                            displayId: ''
                         });
                     });
 
                     await batch.commit();
                     
-                    // 修正：匯入後重新計算用戶的案件編號
-                    await renumberUserCases(state.currentUserUid);
-                    
                     showLoading(false);
-                    window.showSuccess(`成功匯入 ${records.length} 筆新案件，編號已按日期重新排序！`);
+                    window.showSuccess(`成功匯入 ${records.length} 筆新案件！`);
                 } catch (e) {
                     showLoading(false);
                     console.error("Firebase 批次寫入失敗:", e);
@@ -2191,15 +2199,20 @@
                 return dateA - dateB;
             });
             
+            // 分配動態編號
+            filtered.forEach((record, index) => {
+                record.dynamicIndex = index + 1;
+            });
+            
             if (state.unpaidFilter === 'all_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid } = getPaymentStatus(r);
-                    return r.status === '1' && !isPaid;
+                    return (r.status === '1' || r.status === '2') && !isPaid;
                 });
             } else if (state.unpaidFilter === 'current_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid, isOverdue } = getPaymentStatus(r);
-                    return r.status === '1' && !isPaid && isOverdue;
+                    return (r.status === '1' || r.status === '2') && !isPaid && isOverdue;
                 });
             }
             
@@ -2247,7 +2260,7 @@
                         <div class="mobile-case-header">
                             <div>
                                 <div class="flex items-center">
-                                    <span class="mobile-case-id">${r.displayId || r.caseNumber || ''}</span>
+                                    <span class="mobile-case-id">${formatCaseId(r.dynamicIndex)}</span>
                                     <span class="mobile-status-badge ${statusLbl.color}">${statusLbl.text}</span>
                                 </div>
                                 <div class="mobile-borrower-name">${r.borrower || ''}</div>
@@ -2286,7 +2299,7 @@
                     <div class="mobile-case-header">
                         <div>
                             <div class="flex items-center">
-                                <span class="mobile-case-id">${r.displayId || r.caseNumber || ''}</span>
+                                <span class="mobile-case-id">${formatCaseId(r.dynamicIndex)}</span>
                                 <span class="mobile-status-badge ${statusLbl.color}">${statusLbl.text}</span>
                             </div>
                             <div class="mobile-borrower-name">${r.borrower || ''}</div>
@@ -2373,15 +2386,20 @@
                     return dateA - dateB;
                 });
                 
+                // 分配動態編號
+                filtered.forEach((record, index) => {
+                    record.dynamicIndex = index + 1;
+                });
+                
                 if (state.unpaidFilter === 'all_unpaid') {
                     filtered = filtered.filter(r => {
                         const { isPaid } = getPaymentStatus(r);
-                        return r.status === '1' && !isPaid;
+                        return (r.status === '1' || r.status === '2') && !isPaid;
                     });
                 } else if (state.unpaidFilter === 'current_unpaid') {
                     filtered = filtered.filter(r => {
                         const { isPaid, isOverdue } = getPaymentStatus(r);
-                        return r.status === '1' && !isPaid && isOverdue;
+                        return (r.status === '1' || r.status === '2') && !isPaid && isOverdue;
                     });
                 }
                 
@@ -2413,7 +2431,7 @@
                             let val = r[field.key];
                             
                             if (field.key === 'caseNumber') {
-                                val = r.displayId || r.caseNumber || ''; 
+                                val = formatCaseId(r.dynamicIndex); // 使用動態編號
                             }
 
                             if (isBadDebt) {
@@ -2505,12 +2523,12 @@
                 if (state.unpaidFilter === 'all_unpaid') {
                     filtered = filtered.filter(r => {
                         const { isPaid } = getPaymentStatus(r);
-                        return r.status === '1' && !isPaid;
+                        return (r.status === '1' || r.status === '2') && !isPaid;
                     });
                 } else if (state.unpaidFilter === 'current_unpaid') {
                     filtered = filtered.filter(r => {
                         const { isPaid, isOverdue } = getPaymentStatus(r);
-                        return r.status === '1' && !isPaid && isOverdue;
+                        return (r.status === '1' || r.status === '2') && !isPaid && isOverdue;
                     });
                 }
                 
@@ -2597,6 +2615,7 @@
         }
 
         function renderDashboard(stats) {
+            // 生成卡片HTML - 使用絕對定位
             const cardsHtml = state.cardLayout.filter(c => c.id !== 'totalManagementFee' || stats.hasManagedCases).map(c => {
                 const config = getCardConfig(c.id); 
                 if(!config) return '';
@@ -2607,16 +2626,23 @@
                     case 'warning': Object.assign(s, { bg: "bg-amber-50", border: "border-amber-200", text: "text-amber-900", iconBg: "bg-amber-100", iconColor: "text-amber-600" }); break;
                     case 'critical': Object.assign(s, { bg: "bg-red-200", border: "border-red-300", text: "text-red-900", iconBg: "bg-red-300", iconColor: "text-red-700" }); break;
                 }
-                const colSpan = c.width === 2 ? 'lg:col-span-2' : 'lg:col-span-1';
-                return `<div class="${s.bg} ${colSpan} border ${s.border} rounded-xl p-3 shadow-sm relative overflow-hidden flex flex-col justify-between h-full draggable-card hover:shadow-md transition-transform hover:scale-[1.01]" draggable="true" ondragstart="window.handleDragStart(event, '${c.id}')" ondragover="window.handleDragOver(event)" ondrop="window.handleDrop(event, '${c.id}')" onclick="window.openModalList('${c.id}')">
+                
+                const isDragging = state.draggingCard === c.id;
+                
+                return `<div class="draggable-card ${s.bg} border ${s.border} rounded-xl p-3 shadow-sm relative overflow-hidden flex flex-col justify-between ${isDragging ? 'shadow-lg scale-105' : ''}" 
+                    style="width: ${config.width}px; height: ${config.height}px; position: absolute; left: ${config.x}px; top: ${config.y}px;"
+                    onmousedown="window.startDragCard(event, '${c.id}')"
+                    ontouchstart="window.startDragCardTouch(event, '${c.id}')"
+                    onclick="window.openModalList('${c.id}')">
                     <div class="flex justify-between items-start z-10">
-                        <span class="text-base font-bold text-gray-700">${config.label}</span>
+                        <span class="text-base font-bold text-gray-700 truncate">${config.label}</span>
                         <div class="flex items-center space-x-1">
-                            <button onclick="window.resizeCard(event, '${c.id}')" class="p-1 hover:bg-black/10 rounded" title="調整大小"><i data-lucide="${c.width===1?'maximize-2':'minimize-2'}" class="w-3 h-3 opacity-50"></i></button>
+                            <button onclick="event.stopPropagation(); window.resizeCard(event, '${c.id}')" class="p-1 hover:bg-black/10 rounded" title="調整大小"><i data-lucide="${config.width===250?'maximize-2':'minimize-2'}" class="w-3 h-3 opacity-50"></i></button>
                             <div class="p-1.5 rounded-lg ${s.iconBg}"><i data-lucide="${config.icon}" class="w-4 h-4 ${s.iconColor}"></i></div>
                         </div>
                     </div>
                     <div class="mt-1 z-10"><span class="text-2xl sm:text-3xl font-extrabold tracking-tight ${s.text}">${config.isCurrency ? '<span class="text-lg mr-1">$</span>' : ''}${formatNumber(config.value)}${!config.isCurrency ? '<span class="text-lg ml-1">人</span>' : ''}</span></div>
+                    <div class="absolute bottom-1 right-1 opacity-20"><i data-lucide="move" class="w-4 h-4 text-gray-500"></i></div>
                 </div>`;
             }).join('');
 
@@ -2624,50 +2650,49 @@
                 <header class="flex justify-between items-center mb-6">
                     <div>
                         <h2 class="text-2xl font-bold text-gray-800">財務營運儀表板</h2>
+                        <p class="text-sm text-gray-500">可自由拖放卡片調整位置，佈局會自動儲存</p>
                     </div>
-                    ${state.isAdmin ? `
-                    <div class="flex items-center space-x-2 bg-white p-1 rounded-lg border border-gray-200 shadow-sm">
-                        <span class="text-xs font-bold text-gray-500 px-2">檢視對象:</span>
-                        <select onchange="window.updateState({viewingUid: this.value})" class="text-sm border-none bg-transparent outline-none font-bold text-blue-600">
-                            <option value="${state.currentUserUid}">我的帳號</option>
-                            <option value="all" ${state.viewingUid === 'all' ? 'selected' : ''}>全部用戶</option>
-                            ${state.usersDirectory.filter(u => u.uid !== state.currentUserUid).map(u => `<option value="${u.uid}" ${state.viewingUid === u.uid ? 'selected' : ''}>${u.username}</option>`).join('')}
-                        </select>
-                    </div>` : ''}
+                    <div class="flex items-center space-x-2">
+                        ${state.isAdmin ? `
+                        <div class="flex items-center space-x-2 bg-white p-1 rounded-lg border border-gray-200 shadow-sm">
+                            <span class="text-xs font-bold text-gray-500 px-2">檢視對象:</span>
+                            <select onchange="window.updateState({viewingUid: this.value})" class="text-sm border-none bg-transparent outline-none font-bold text-blue-600">
+                                <option value="${state.currentUserUid}">我的帳號</option>
+                                <option value="all" ${state.viewingUid === 'all' ? 'selected' : ''}>全部用戶</option>
+                                ${state.usersDirectory.filter(u => u.uid !== state.currentUserUid).map(u => `<option value="${u.uid}" ${state.viewingUid === u.uid ? 'selected' : ''}>${u.username}</option>`).join('')}
+                            </select>
+                        </div>` : ''}
+                        <button onclick="window.resetDashboardLayout()" class="bg-gray-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-gray-700 flex items-center shadow-sm">
+                            <i data-lucide="refresh-ccw" class="w-3 h-3 mr-1"></i>重置佈局
+                        </button>
+                    </div>
                 </header>
-                <div class="grid grid-cols-1 lg:grid-cols-4 gap-3">
-                    <div class="lg:col-span-3 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">
-                        ${cardsHtml}
+                
+                <div class="dashboard-container">
+                    ${cardsHtml}
+                    <div class="absolute bottom-4 right-4 text-xs text-gray-400 flex items-center">
+                        <i data-lucide="info" class="w-3 h-3 mr-1"></i> 拖放卡片可自由調整位置
                     </div>
-                    <div class="flex flex-col gap-3">
-                        <div class="bg-gradient-to-br from-teal-600 to-cyan-700 rounded-xl p-4 shadow-lg border border-transparent flex flex-col justify-center relative overflow-hidden flex-1 min-h-[300px]">
-                            <div class="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mr-10 -mt-10 blur-xl"></div>
-                            <div class="absolute bottom-0 left-0 w-24 h-24 bg-black/10 rounded-full -ml-10 -mb-10 blur-xl"></div>
-                            <div class="flex items-center mb-4 relative z-10 border-b border-white/20 pb-2">
-                                <i data-lucide="database" class="w-6 h-6 text-white mr-2"></i>
-                                <h3 class="font-bold text-white text-xl tracking-wide">系統案件狀態</h3>
-                            </div>
-                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 relative z-10 flex-1">
-                                <div onclick="window.openModalList('active')" class="bg-emerald-100 backdrop-blur-sm p-3 rounded-xl text-center cursor-pointer hover:bg-emerald-200 transition-all border border-emerald-300 group flex flex-col justify-center">
-                                    <span class="block text-4xl font-extrabold text-emerald-800 mb-1 group-hover:scale-110 transition-transform">${formatNumber(stats.activeCases)}</span>
-                                    <span class="text-base text-emerald-700 font-bold uppercase tracking-wider">進行中</span>
-                                </div>
-                                <div onclick="window.openModalList('unpaid')" class="bg-red-200 p-3 rounded-xl text-center cursor-pointer hover:bg-red-300 transition-all shadow-md group flex flex-col justify-center">
-                                    <span class="block text-4xl font-extrabold text-red-800 mb-1 group-hover:scale-110 transition-transform">${formatNumber(stats.unpaidCount)}</span>
-                                    <span class="text-lg text-red-700 font-bold uppercase tracking-wider flex items-center justify-center">
-                                        <i data-lucide="alert-triangle" class="w-4 h-4 mr-1 animate-pulse"></i>本期逾期
-                                    </span>
-                                </div>
-                                <div onclick="window.openModalList('closed')" class="bg-gray-200 p-3 rounded-xl text-center cursor-pointer hover:bg-gray-300 transition-all border border-gray-300 flex flex-col justify-center">
-                                    <span class="block text-4xl font-bold text-gray-800 mb-1">${formatNumber(stats.normalClosedCount)}</span>
-                                    <span class="text-lg text-gray-600 font-bold uppercase tracking-wider">結案</span>
-                                </div>
-                                <div onclick="window.openModalList('badDebt')" class="bg-pink-300 p-3 rounded-xl text-center cursor-pointer hover:bg-pink-400 transition-all shadow-md group flex flex-col justify-center">
-                                    <span class="block text-4xl font-extrabold text-pink-900 mb-1 group-hover:scale-110 transition-transform">${formatNumber(stats.activeBadDebtCount + stats.closedBadDebtCount)}</span>
-                                    <span class="text-lg text-pink-800 font-bold uppercase tracking-wider">呆帳</span>
-                                </div>
-                            </div>
-                        </div>
+                </div>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+                    <div onclick="window.openModalList('active')" class="bg-emerald-100 backdrop-blur-sm p-4 rounded-xl text-center cursor-pointer hover:bg-emerald-200 transition-all border border-emerald-300 group flex flex-col justify-center">
+                        <span class="block text-4xl font-extrabold text-emerald-800 mb-1 group-hover:scale-110 transition-transform">${formatNumber(stats.activeCases)}</span>
+                        <span class="text-base text-emerald-700 font-bold uppercase tracking-wider">進行中</span>
+                    </div>
+                    <div onclick="window.openModalList('unpaid')" class="bg-red-200 p-4 rounded-xl text-center cursor-pointer hover:bg-red-300 transition-all shadow-md group flex flex-col justify-center">
+                        <span class="block text-4xl font-extrabold text-red-800 mb-1 group-hover:scale-110 transition-transform">${formatNumber(stats.unpaidCount)}</span>
+                        <span class="text-lg text-red-700 font-bold uppercase tracking-wider flex items-center justify-center">
+                            <i data-lucide="alert-triangle" class="w-4 h-4 mr-1 animate-pulse"></i>本期逾期
+                        </span>
+                    </div>
+                    <div onclick="window.openModalList('closed')" class="bg-gray-200 p-4 rounded-xl text-center cursor-pointer hover:bg-gray-300 transition-all border border-gray-300 flex flex-col justify-center">
+                        <span class="block text-4xl font-bold text-gray-800 mb-1">${formatNumber(stats.normalClosedCount)}</span>
+                        <span class="text-lg text-gray-600 font-bold uppercase tracking-wider">結案</span>
+                    </div>
+                    <div onclick="window.openModalList('badDebt')" class="bg-pink-300 p-4 rounded-xl text-center cursor-pointer hover:bg-pink-400 transition-all shadow-md group flex flex-col justify-center">
+                        <span class="block text-4xl font-extrabold text-pink-900 mb-1 group-hover:scale-110 transition-transform">${formatNumber(stats.activeBadDebtCount + stats.closedBadDebtCount)}</span>
+                        <span class="text-lg text-pink-800 font-bold uppercase tracking-wider">呆帳</span>
                     </div>
                 </div>
             </div>`; 
@@ -2834,9 +2859,6 @@
                     <button onclick="window.cleanupOrphanedCases()" class="px-4 py-2 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 flex items-center text-sm font-bold">
                         <i data-lucide="trash-2" class="w-4 h-4 mr-2"></i>清理無主案件
                     </button>
-                    <button onclick="window.renumberAllUsersCases()" class="px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 flex items-center text-sm font-bold">
-                        <i data-lucide="list-ordered" class="w-4 h-4 mr-2"></i>重新編號所有案件
-                    </button>
                 </div>
                 
                 <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
@@ -2892,7 +2914,6 @@
                         <li>• 無法刪除自己的帳號</li>
                         <li>• 刪除操作無法復原，請謹慎操作</li>
                         <li>• 「清理無主案件」會刪除所有沒有對應用戶的案件</li>
-                        <li>• 「重新編號所有案件」會按照放款日期重新排序每個用戶的案件編號</li>
                     </ul>
                 </div>
             </div>`;
@@ -2950,7 +2971,7 @@
             const dropdownHtml = `<div id="repaymentDropdownContainer" class="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-xl max-h-60 overflow-y-auto ${dropdownDisplayClass}"></div>`; 
             const selectedCase = state.selectedRepaymentId ? state.records.find(r => r.id === state.selectedRepaymentId) : null; 
             
-            return `<div class="max-w-2xl mx-auto bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden animate-fade-in mt-8"><div class="bg-gradient-to-r from-blue-600 to-indigo-700 p-6 text-white flex justify-between items-center"><div><h2 class="text-xl font-bold flex items-center"><i data-lucide="banknote" class="w-6 h-6 mr-2"></i> 還款入帳作業</h2><p class="text-blue-100 text-sm mt-1">選取案件連結後，輸入每期還款資訊</p></div><button onclick="window.setActiveTab('list')" class="px-4 py-2 bg-white/20 text-white rounded-lg hover:bg-white/30 transition-colors flex items-center text-sm font-medium"><i data-lucide="chevron-left" class="w-4 h-4 mr-1"></i>回上一頁</button></div><div class="p-8 space-y-6"><div class="space-y-2 relative"><label class="text-sm font-bold text-gray-600 flex items-center"><i data-lucide="search" class="w-4 h-4 mr-1"></i> 選擇案件 (僅顯示進行中${state.allowedStatus.includes('2') ? '/代管' : ''})</label><div class="relative"><input type="text" placeholder="輸入編號或姓名搜尋..." value="${state.repaymentSearchTerm}" oninput="window.updateRepaymentSearch(this.value)" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none pl-10"/><i data-lucide="search" class="absolute left-3 top-3.5 text-gray-400 w-4 h-4"></i></div>${dropdownHtml}<select id="repaymentSelect" onchange="window.handleRepaymentSelect(this.value)" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white mt-2" ${isSearching ? 'hidden' : ''}><option value="">-- 請選擇案件 --</option>${repaymentCases.map(r => `<option value="${r.id}" ${state.selectedRepaymentId === r.id ? 'selected' : ''}>${r.displayId || r.caseNumber || ''} - ${r.borrower || ''} (每期應繳: $${formatNumber((Number(r.principalPerTerm)||0) + (Number(r.interestPerTerm)||0))})</option>`).join('')}</select>${selectedCase ? `<div class="mt-2 flex justify-between items-center bg-blue-50 p-3 rounded-lg border border-blue-100"><span class="text-sm text-blue-800 font-medium">當前連結案件：${selectedCase.displayId || selectedCase.caseNumber || ''} ${selectedCase.borrower}</span><button onclick="window.resetRepaymentSelection()" class="text-xs text-blue-500 hover:text-blue-700 underline">重新選擇</button></div>` : ''}</div><div class="bg-gray-50 rounded-xl p-6 border border-gray-200 space-y-4"><div class="flex justify-between items-center border-b border-gray-200 pb-2 mb-4"><h3 class="font-bold text-gray-700 flex items-center"><i data-lucide="edit-2" class="w-4 h-4 mr-2"></i> 入帳資訊</h3>${selectedCase ? `<span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-bold flex items-center"><i data-lucide="check" class="w-3 h-3 mr-1"></i> 已連結</span>` : `<span class="bg-amber-100 text-amber-700 px-3 py-1 rounded-full text-xs font-bold flex items-center"><i data-lucide="link" class="w-3 h-3 mr-1"></i> 未連結案件</span>`}</div><div class="grid grid-cols-1 md:grid-cols-2 gap-4"><div><label class="block text-xs font-bold text-gray-500 mb-1">還款日期 (入帳日)</label><input type="date" value="${state.repaymentDate}" oninput="window.updateRepaymentInput('repaymentDate', this.value)" class="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none bg-white"/></div><div class="hidden md:block"></div><div><label class="block text-xs font-bold text-gray-500 mb-1">還款本金</label><div class="relative"><span class="absolute left-3 top-2.5 text-gray-400">$</span><input type="number" value="${state.repaymentPrincipal}" oninput="window.updateRepaymentInput('repaymentPrincipal', this.value)" placeholder="0" class="w-full p-2 pl-7 border rounded focus:ring-2 focus:ring-blue-500 outline-none font-mono text-lg bg-white" ${selectedCase?.status === '2' ? 'disabled bg-gray-200' : ''}/></div></div><div><label class="block text-xs font-bold text-gray-500 mb-1">還款利息</label><div class="relative"><span class="absolute left-3 top-2.5 text-gray-400">$</span><input type="number" value="${state.repaymentInterest}" oninput="window.updateRepaymentInput('repaymentInterest', this.value)" placeholder="0" class="w-full p-2 pl-7 border rounded focus:ring-2 focus:ring-blue-500 outline-none font-mono text-lg bg-white"/></div></div></div></div><div class="pt-4 flex justify-end border-t border-gray-100 mt-6"><button onclick="window.submitRepayment()" ${!selectedCase ? 'disabled' : ''} class="px-6 py-3 rounded-lg shadow-md flex items-center font-bold text-lg transition-all ${selectedCase ? 'bg-blue-600 text-white hover:bg-blue-700 transform active:scale-95' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}"><i data-lucide="save" class="w-5 h-5 mr-2"></i> 確認入帳</button></div></div></div>`; 
+            return `<div class="max-w-2xl mx-auto bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden animate-fade-in mt-8"><div class="bg-gradient-to-r from-blue-600 to-indigo-700 p-6 text-white flex justify-between items-center"><div><h2 class="text-xl font-bold flex items-center"><i data-lucide="banknote" class="w-6 h-6 mr-2"></i> 還款入帳作業</h2><p class="text-blue-100 text-sm mt-1">選取案件連結後，輸入每期還款資訊</p></div><button onclick="window.setActiveTab('list')" class="px-4 py-2 bg-white/20 text-white rounded-lg hover:bg-white/30 transition-colors flex items-center text-sm font-medium"><i data-lucide="chevron-left" class="w-4 h-4 mr-1"></i>回上一頁</button></div><div class="p-8 space-y-6"><div class="space-y-2 relative"><label class="text-sm font-bold text-gray-600 flex items-center"><i data-lucide="search" class="w-4 h-4 mr-1"></i> 選擇案件 (僅顯示進行中${state.allowedStatus.includes('2') ? '/代管' : ''})</label><div class="relative"><input type="text" placeholder="輸入編號或姓名搜尋..." value="${state.repaymentSearchTerm}" oninput="window.updateRepaymentSearch(this.value)" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none pl-10"/><i data-lucide="search" class="absolute left-3 top-3.5 text-gray-400 w-4 h-4"></i></div>${dropdownHtml}<select id="repaymentSelect" onchange="window.handleRepaymentSelect(this.value)" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white mt-2" ${isSearching ? 'hidden' : ''}><option value="">-- 請選擇案件 --</option>${repaymentCases.map(r => `<option value="${r.id}" ${state.selectedRepaymentId === r.id ? 'selected' : ''}>${formatCaseId(r.dynamicIndex)} - ${r.borrower || ''} (每期應繳: $${formatNumber((Number(r.principalPerTerm)||0) + (Number(r.interestPerTerm)||0))})</option>`).join('')}</select>${selectedCase ? `<div class="mt-2 flex justify-between items-center bg-blue-50 p-3 rounded-lg border border-blue-100"><span class="text-sm text-blue-800 font-medium">當前連結案件：${formatCaseId(selectedCase.dynamicIndex)} ${selectedCase.borrower}</span><button onclick="window.resetRepaymentSelection()" class="text-xs text-blue-500 hover:text-blue-700 underline">重新選擇</button></div>` : ''}</div><div class="bg-gray-50 rounded-xl p-6 border border-gray-200 space-y-4"><div class="flex justify-between items-center border-b border-gray-200 pb-2 mb-4"><h3 class="font-bold text-gray-700 flex items-center"><i data-lucide="edit-2" class="w-4 h-4 mr-2"></i> 入帳資訊</h3>${selectedCase ? `<span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-bold flex items-center"><i data-lucide="check" class="w-3 h-3 mr-1"></i> 已連結</span>` : `<span class="bg-amber-100 text-amber-700 px-3 py-1 rounded-full text-xs font-bold flex items-center"><i data-lucide="link" class="w-3 h-3 mr-1"></i> 未連結案件</span>`}</div><div class="grid grid-cols-1 md:grid-cols-2 gap-4"><div><label class="block text-xs font-bold text-gray-500 mb-1">還款日期 (入帳日)</label><input type="date" value="${state.repaymentDate}" oninput="window.updateRepaymentInput('repaymentDate', this.value)" class="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none bg-white"/></div><div class="hidden md:block"></div><div><label class="block text-xs font-bold text-gray-500 mb-1">還款本金</label><div class="relative"><span class="absolute left-3 top-2.5 text-gray-400">$</span><input type="number" value="${state.repaymentPrincipal}" oninput="window.updateRepaymentInput('repaymentPrincipal', this.value)" placeholder="0" class="w-full p-2 pl-7 border rounded focus:ring-2 focus:ring-blue-500 outline-none font-mono text-lg bg-white" ${selectedCase?.status === '2' ? 'disabled bg-gray-200' : ''}/></div></div><div><label class="block text-xs font-bold text-gray-500 mb-1">還款利息</label><div class="relative"><span class="absolute left-3 top-2.5 text-gray-400">$</span><input type="number" value="${state.repaymentInterest}" oninput="window.updateRepaymentInput('repaymentInterest', this.value)" placeholder="0" class="w-full p-2 pl-7 border rounded focus:ring-2 focus:ring-blue-500 outline-none font-mono text-lg bg-white"/></div></div></div></div><div class="pt-4 flex justify-end border-t border-gray-100 mt-6"><button onclick="window.submitRepayment()" ${!selectedCase ? 'disabled' : ''} class="px-6 py-3 rounded-lg shadow-md flex items-center font-bold text-lg transition-all ${selectedCase ? 'bg-blue-600 text-white hover:bg-blue-700 transform active:scale-95' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}"><i data-lucide="save" class="w-5 h-5 mr-2"></i> 確認入帳</button></div></div></div>`; 
         }
 
         function renderApp() { 
@@ -3036,20 +3057,20 @@
                     
                     let customHeaders = ''; let customRowBuilder = null;
 
-                    customHeaders = `<tr><th class="p-2">借款人</th><th class="p-2 text-right">欠款</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr>`;
-                    customRowBuilder = (r, calc, status) => `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId || r.caseNumber || ''})</span></td><td class="p-2 text-right text-red-600 font-mono">${formatNumber(calc.arrears)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td><td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td></tr>`;
+                    customHeaders = `<tr><th class="p-2">編號</th><th class="p-2">借款人</th><th class="p-2 text-right">欠款</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr>`;
+                    customRowBuilder = (r, calc, status) => `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${formatCaseId(r.dynamicIndex)}</td><td class="p-2 font-bold text-gray-800">${r.borrower}</td><td class="p-2 text-right text-red-600 font-mono">${formatNumber(calc.arrears)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td><td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td></tr>`;
                     
                     if (state.modalType === 'totalIncome') {
-                         customHeaders = `<tr><th class="p-2">借款人</th><th class="p-2 text-right">累計利息/管理費</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr>`;
-                         customRowBuilder = (r, calc, status) => `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${r.borrower}</td><td class="p-2 text-right text-emerald-600 font-mono font-bold">${formatNumber(calc.totalInterestPaid)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td><td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td></tr>`;
+                         customHeaders = `<tr><th class="p-2">編號</th><th class="p-2">借款人</th><th class="p-2 text-right">累計利息/管理費</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr>`;
+                         customRowBuilder = (r, calc, status) => `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${formatCaseId(r.dynamicIndex)}</td><td class="p-2 font-bold text-gray-800">${r.borrower}</td><td class="p-2 text-right text-emerald-600 font-mono font-bold">${formatNumber(calc.totalInterestPaid)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td><td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td></tr>`;
                     } else if (state.modalType === 'outstanding') {
-                         customHeaders = `<tr><th class="p-2">借款人</th><th class="p-2 text-right">在外本金</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr>`;
-                         customRowBuilder = (r, calc, status) => `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${r.borrower}</td><td class="p-2 text-right text-emerald-600 font-mono font-bold">${formatNumber(calc.outstanding)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td><td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td></tr>`;
+                         customHeaders = `<tr><th class="p-2">編號</th><th class="p-2">借款人</th><th class="p-2 text-right">在外本金</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr>`;
+                         customRowBuilder = (r, calc, status) => `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${formatCaseId(r.dynamicIndex)}</td><td class="p-2 font-bold text-gray-800">${r.borrower}</td><td class="p-2 text-right text-emerald-600 font-mono font-bold">${formatNumber(calc.outstanding)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td><td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td></tr>`;
                     } else if (state.modalType === 'currentLent') {
-                         customHeaders = `<tr><th class="p-2">借款人</th><th class="p-2 text-right">放款金額</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr>`;
-                         customRowBuilder = (r, calc, status) => `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${r.borrower}</td><td class="p-2 text-right text-emerald-600 font-mono font-bold">${formatNumber(r.disbursed)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td><td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td></tr>`;
+                         customHeaders = `<tr><th class="p-2">編號</th><th class="p-2">借款人</th><th class="p-2 text-right">放款金額</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr>`;
+                         customRowBuilder = (r, calc, status) => `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${formatCaseId(r.dynamicIndex)}</td><td class="p-2 font-bold text-gray-800">${r.borrower}</td><td class="p-2 text-right text-emerald-600 font-mono font-bold">${formatNumber(r.disbursed)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td><td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td></tr>`;
                     } else if (state.modalType === 'monthDue') {
-                         customHeaders = `<tr><th class="p-2">借款人</th><th class="p-2 text-right">本月本金</th><th class="p-2 text-right">本月利息</th><th class="p-2 text-right">總計</th><th class="p-2 text-center">本月繳款狀態</th><th class="p-2 text-center">狀態</th></tr>`;
+                         customHeaders = `<tr><th class="p-2">編號</th><th class="p-2">借款人</th><th class="p-2 text-right">本月本金</th><th class="p-2 text-right">本月利息</th><th class="p-2 text-right">總計</th><th class="p-2 text-center">本月繳款狀態</th><th class="p-2 text-center">狀態</th></tr>`;
                          customRowBuilder = (r, calc, status) => {
                              const p = r.status==='2' ? 0 : (Number(r.principalPerTerm)||0);
                              const i = Number(r.interestPerTerm)||0;
@@ -3058,10 +3079,10 @@
                                  ? `<span class="text-emerald-600 font-bold text-xs"><i data-lucide="check" class="w-3 h-3 inline"></i>已繳清</span>` 
                                  : (isOverdue ? `<span class="text-red-600 font-bold text-xs"><i data-lucide="alert-triangle" class="w-3 h-3 inline"></i>逾期</span>` : `<span class="text-gray-500 font-bold text-xs">未繳</span>`);
 
-                             return `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${r.borrower}</td><td class="p-2 text-right font-mono">${formatNumber(p)}</td><td class="p-2 text-right font-mono">${formatNumber(i)}</td><td class="p-2 text-right font-mono font-bold text-blue-600">${formatNumber(p+i)}</td><td class="p-2 text-center">${paymentStatusHtml}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td></tr>`;
+                             return `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${formatCaseId(r.dynamicIndex)}</td><td class="p-2 font-bold text-gray-800">${r.borrower}</td><td class="p-2 text-right font-mono">${formatNumber(p)}</td><td class="p-2 text-right font-mono">${formatNumber(i)}</td><td class="p-2 text-right font-mono font-bold text-blue-600">${formatNumber(p+i)}</td><td class="p-2 text-center">${paymentStatusHtml}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td></tr>`;
                            }
                     } else if (state.modalType === 'monthInterestDue') { 
-                         customHeaders = `<tr><th class="p-2">借款人</th><th class="p-2 text-right">本月利息</th><th class="p-2 text-center">本月繳款狀態</th><th class="p-2 text-center">狀態</th></tr>`;
+                         customHeaders = `<tr><th class="p-2">編號</th><th class="p-2">借款人</th><th class="p-2 text-right">本月利息</th><th class="p-2 text-center">本月繳款狀態</th><th class="p-2 text-center">狀態</th></tr>`;
                          customRowBuilder = (r, calc, status) => {
                              const i = Number(r.interestPerTerm)||0;
                              const { isPaid, isOverdue } = getPaymentStatus(r);
@@ -3069,31 +3090,32 @@
                                  ? `<span class="text-emerald-600 font-bold text-xs"><i data-lucide="check" class="w-3 h-3 inline"></i>已繳清</span>` 
                                  : (isOverdue ? `<span class="text-red-600 font-bold text-xs"><i data-lucide="alert-triangle" class="w-3 h-3 inline"></i>逾期</span>` : `<span class="text-gray-500 font-bold text-xs">未繳</span>`);
 
-                             return `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${r.borrower}</td><td class="p-2 text-right font-mono font-bold text-emerald-600">${formatNumber(i)}</td><td class="p-2 text-center">${paymentStatusHtml}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td></tr>`;
+                             return `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${formatCaseId(r.dynamicIndex)}</td><td class="p-2 font-bold text-gray-800">${r.borrower}</td><td class="p-2 text-right font-mono font-bold text-emerald-600">${formatNumber(i)}</td><td class="p-2 text-center">${paymentStatusHtml}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td></tr>`;
                            }
                     } else if (state.modalType === 'monthCollected') {
-                         customHeaders = `<tr><th class="p-2">借款人</th><th class="p-2 text-right">本期本金</th><th class="p-2 text-right">本期利息</th><th class="p-2 text-right">總計</th><th class="p-2 text-center">狀態</th></tr>`;
+                         customHeaders = `<tr><th class="p-2">編號</th><th class="p-2">借款人</th><th class="p-2 text-right">本期本金</th><th class="p-2 text-right">本期利息</th><th class="p-2 text-right">總計</th><th class="p-2 text-center">狀態</th></tr>`;
                          customRowBuilder = (r, calc, status) => {
                              const p = r.status==='2' ? 0 : (Number(r.principalPerTerm)||0);
                              const i = Number(r.interestPerTerm)||0;
-                             return `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${r.borrower}</td><td class="p-2 text-right font-mono">${formatNumber(p)}</td><td class="p-2 text-right font-mono">${formatNumber(i)}</td><td class="p-2 text-right font-mono font-bold text-emerald-600">${formatNumber(p+i)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td></tr>`;
+                             return `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${formatCaseId(r.dynamicIndex)}</td><td class="p-2 font-bold text-gray-800">${r.borrower}</td><td class="p-2 text-right font-mono">${formatNumber(p)}</td><td class="p-2 text-right font-mono">${formatNumber(i)}</td><td class="p-2 text-right font-mono font-bold text-emerald-600">${formatNumber(p+i)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td></tr>`;
                            }
                     } else if (state.modalType === 'monthInterestCollected') { 
-                         customHeaders = `<tr><th class="p-2">借款人</th><th class="p-2 text-right">本期利息</th><th class="p-2 text-center">狀態</th></tr>`;
+                         customHeaders = `<tr><th class="p-2">編號</th><th class="p-2">借款人</th><th class="p-2 text-right">本期利息</th><th class="p-2 text-center">狀態</th></tr>`;
                          customRowBuilder = (r, calc, status) => {
                              const i = Number(r.interestPerTerm)||0;
-                             return `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${r.borrower}</td><td class="p-2 text-right font-mono font-bold text-emerald-600">${formatNumber(i)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td></tr>`;
+                             return `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${formatCaseId(r.dynamicIndex)}</td><td class="p-2 font-bold text-gray-800">${r.borrower}</td><td class="p-2 text-right font-mono font-bold text-emerald-600">${formatNumber(i)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td></tr>`;
                            }
                     } else if (state.modalType === 'totalManagementFee') {
-                         customHeaders = `<tr><th class="p-2">借款人</th><th class="p-2 text-right">管理費 (利息)</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr>`;
-                         customRowBuilder = (r, calc, status) => `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${r.borrower}</td><td class="p-2 text-right text-emerald-600 font-mono font-bold">${formatNumber(r.interestPerTerm)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td><td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td></tr>`;
+                         customHeaders = `<tr><th class="p-2">編號</th><th class="p-2">借款人</th><th class="p-2 text-right">管理費 (利息)</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr>`;
+                         customRowBuilder = (r, calc, status) => `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${formatCaseId(r.dynamicIndex)}</td><td class="p-2 font-bold text-gray-800">${r.borrower}</td><td class="p-2 text-right text-emerald-600 font-mono font-bold">${formatNumber(r.interestPerTerm)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td><td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td></tr>`;
                     } else if (state.modalType === 'monthDiff') { 
-                         customHeaders = `<tr><th class="p-2">借款人</th><th class="p-2 text-right">本期本金</th><th class="p-2 text-right">本期利息</th><th class="p-2 text-right">未繳總計</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr>`;
+                         customHeaders = `<tr><th class="p-2">編號</th><th class="p-2">借款人</th><th class="p-2 text-right">本期本金</th><th class="p-2 text-right">本期利息</th><th class="p-2 text-right">未繳總計</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr>`;
                          customRowBuilder = (r, calc, status) => {
                              const p = r.status==='2' ? 0 : (Number(r.principalPerTerm)||0);
                              const i = Number(r.interestPerTerm)||0;
                              const total = p + i;
                              return `<tr class="hover:bg-gray-50 transition-colors">
+                                 <td class="p-2 font-bold text-gray-800">${formatCaseId(r.dynamicIndex)}</td>
                                  <td class="p-2 font-bold text-gray-800">${r.borrower}</td>
                                  <td class="p-2 text-right font-mono text-gray-600">${formatNumber(p)}</td>
                                  <td class="p-2 text-right font-mono text-gray-600">${formatNumber(i)}</td>
@@ -3103,10 +3125,11 @@
                                </tr>`;
                            }
                     } else if (state.modalType === 'monthInterestDiff') { 
-                         customHeaders = `<tr><th class="p-2">借款人</th><th class="p-2 text-right">本期利息</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr>`;
+                         customHeaders = `<tr><th class="p-2">編號</th><th class="p-2">借款人</th><th class="p-2 text-right">本期利息</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr>`;
                          customRowBuilder = (r, calc, status) => {
                              const i = Number(r.interestPerTerm)||0;
                              return `<tr class="hover:bg-gray-50 transition-colors">
+                                 <td class="p-2 font-bold text-gray-800">${formatCaseId(r.dynamicIndex)}</td>
                                  <td class="p-2 font-bold text-gray-800">${r.borrower}</td>
                                  <td class="p-2 text-right font-mono text-red-600 font-bold">${formatNumber(i)}</td>
                                  <td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td>
@@ -3178,44 +3201,20 @@
 
                     if (!state.isLoadingListener) {
                         const q = query(
-                            collection(db, 'artifacts', appId, 'public', 'data', 'loan_records'), 
-                            orderBy('date', 'asc')
+                            collection(db, 'artifacts', appId, 'public', 'data', 'loan_records')
                         );
                         onSnapshot(q, (snapshot) => {
-                            // 修正：按用戶分組並排序，確保每個用戶的編號正確
-                            const usersRecords = {};
+                            const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                             
-                            snapshot.docs.forEach(doc => {
-                                const data = doc.data();
-                                const uid = data.ownerUid;
-                                if (!usersRecords[uid]) usersRecords[uid] = [];
-                                usersRecords[uid].push({ id: doc.id, ...data });
-                            });
-                            
-                            // 對每個用戶的記錄按照日期排序
-                            Object.keys(usersRecords).forEach(uid => {
-                                usersRecords[uid].sort((a, b) => {
-                                    const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
-                                    const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
-                                    return dateA - dateB;
-                                });
-                            });
-                            
-                            // 生成每個用戶的編號，並合併成一個數組
-                            const docs = [];
-                            Object.keys(usersRecords).forEach(uid => {
-                                const userRecords = usersRecords[uid];
-                                userRecords.forEach((record, index) => {
-                                    const displayId = record.caseNumber || formatCaseId(index + 1, uid);
-                                    docs.push({ ...record, displayId });
-                                });
-                            });
-                            
-                            // 然後，我們可以按照日期對所有記錄進行排序，以便在列表頁面中默認按照日期排序
+                            // 排序並分配動態編號
                             docs.sort((a, b) => {
                                 const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
                                 const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
                                 return dateA - dateB;
+                            });
+                            
+                            docs.forEach((record, index) => {
+                                record.dynamicIndex = index + 1;
                             });
                             
                             updateState({ records: docs });
@@ -3236,7 +3235,7 @@
                         authLoading: false,
                         activeTab: 'dashboard',
                         records: [],
-                        cardLayout: initialCardLayout,
+                        cardLayout: JSON.parse(localStorage.getItem('cardLayout')) || initialCardLayout,
                         editingRecord: null,
                         searchTerm: '',
                         repaymentSearchTerm: '',
@@ -3255,7 +3254,9 @@
                         unpaidFilter: null,
                         batchDeleteMode: false,
                         selectedCasesForBatch: [],
-                        activeCasesFilter: false
+                        activeCasesFilter: false,
+                        draggingCard: null,
+                        dragOffset: { x: 0, y: 0 }
                     });
                     
                     formData = { ...initialFormState };
