@@ -686,6 +686,112 @@
         // --- Logic ---
         const updateState = (updates) => { Object.assign(state, updates); renderApp(); };
 
+        // 新增：保存卡片布局到 Firebase
+        const saveCardLayoutToFirebase = async (layout) => {
+            if (!firebaseAvailable || !state.currentUserUid || state.isDemoMode) return;
+            
+            try {
+                const userSettingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'user_settings', state.currentUserUid);
+                await setDoc(userSettingsRef, { 
+                    cardLayout: layout,
+                    cardColors: state.cardColors,
+                    updatedAt: serverTimestamp() 
+                }, { merge: true });
+                console.log("卡片佈局已保存到 Firebase");
+            } catch (error) {
+                console.error("保存卡片佈局失敗:", error);
+            }
+        };
+
+        // 新增：從 Firebase 載入卡片布局
+        const loadCardLayoutFromFirebase = async () => {
+            if (!firebaseAvailable || !state.currentUserUid || state.isDemoMode) {
+                return null;
+            }
+            
+            try {
+                const userSettingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'user_settings', state.currentUserUid);
+                const docSnap = await getDoc(userSettingsRef);
+                
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    if (data.cardLayout && Array.isArray(data.cardLayout)) {
+                        // 驗證卡片布局是否有效
+                        const validLayout = data.cardLayout.filter(card => 
+                            initialCardLayout.some(initialCard => initialCard.id === card.id)
+                        );
+                        
+                        // 確保所有初始卡片都存在
+                        const missingCards = initialCardLayout.filter(initialCard => 
+                            !validLayout.find(card => card.id === initialCard.id)
+                        );
+                        
+                        const finalLayout = [...validLayout, ...missingCards];
+                        
+                        // 載入卡片顏色
+                        if (data.cardColors) {
+                            state.cardColors = data.cardColors;
+                        }
+                        
+                        return finalLayout;
+                    }
+                }
+            } catch (error) {
+                console.error("載入卡片佈局失敗:", error);
+            }
+            
+            return null;
+        };
+
+        // 修改：卡片拖放處理函數，現在會保存到 Firebase
+        window.handleDragStart = (e, id) => { e.dataTransfer.setData('cardId', id); };
+        window.handleDragOver = (e) => { e.preventDefault(); };
+        window.handleDrop = (e, targetId) => { 
+            e.preventDefault(); 
+            const sourceId = e.dataTransfer.getData('cardId'); 
+            if (sourceId && sourceId !== targetId) { 
+                const layout = [...state.cardLayout]; 
+                const fromIndex = layout.findIndex(c => c.id === sourceId); 
+                const toIndex = layout.findIndex(c => c.id === targetId); 
+                if (fromIndex !== -1 && toIndex !== -1) { 
+                    const [moved] = layout.splice(fromIndex, 1); 
+                    layout.splice(toIndex, 0, moved); 
+                    updateState({ cardLayout: layout }); 
+                    
+                    // 保存到 Firebase
+                    saveCardLayoutToFirebase(layout);
+                } 
+            } 
+        };
+        
+        // 修改：卡片大小調整函數，現在會保存到 Firebase
+        window.resizeCard = (e, id) => { 
+            e.stopPropagation(); 
+            const layout = state.cardLayout.map(c => { 
+                if (c.id === id) { 
+                    return { ...c, width: c.width === 2 ? 1 : 2 }; 
+                } 
+                return c; 
+            }); 
+            updateState({ cardLayout: layout }); 
+            
+            // 保存到 Firebase
+            saveCardLayoutToFirebase(layout);
+        };
+        
+        // 修改：卡片顏色變更函數，現在會保存到 Firebase
+        window.changeCardColor = (e, id) => {
+            e.stopPropagation();
+            const colors = ['primary', 'warning', 'critical', 'danger', 'info', 'purple'];
+            const current = state.cardColors[id] || 'primary';
+            const next = colors[(colors.indexOf(current) + 1) % colors.length];
+            state.cardColors[id] = next;
+            renderApp();
+            
+            // 保存到 Firebase
+            saveCardLayoutToFirebase(state.cardLayout);
+        };
+
         window.updateStatus4Amount = async (id, field, value) => {
             const val = Math.max(0, Number(value) || 0); // 確保最小值為0
             const idx = state.records.findIndex(r => r.id === id);
@@ -946,22 +1052,8 @@
             return { ...config[id], width };
         };
 
-        // 新增：卡片顏色變更函數 - 增加紫色選項
-        window.changeCardColor = (e, id) => {
-            e.stopPropagation();
-            const colors = ['primary', 'warning', 'critical', 'danger', 'info', 'purple']; // 增加紫色
-            const current = state.cardColors[id] || 'primary';
-            const next = colors[(colors.indexOf(current) + 1) % colors.length];
-            state.cardColors[id] = next;
-            renderApp();
-        };
-
         window.setActiveTab = (tab) => updateState({ activeTab: tab, modalType: null });
         window.updateState = (updates) => updateState(updates);
-        window.handleDragStart = (e, id) => { e.dataTransfer.setData('cardId', id); };
-        window.handleDragOver = (e) => { e.preventDefault(); };
-        window.handleDrop = (e, targetId) => { e.preventDefault(); const sourceId = e.dataTransfer.getData('cardId'); if (sourceId && sourceId !== targetId) { const layout = [...state.cardLayout]; const fromIndex = layout.findIndex(c => c.id === sourceId); const toIndex = layout.findIndex(c => c.id === targetId); if (fromIndex !== -1 && toIndex !== -1) { const [moved] = layout.splice(fromIndex, 1); layout.splice(toIndex, 0, moved); updateState({ cardLayout: layout }); } } };
-        window.resizeCard = (e, id) => { e.stopPropagation(); const layout = state.cardLayout.map(c => { if (c.id === id) { return { ...c, width: c.width === 2 ? 1 : 2 }; } return c; }); updateState({ cardLayout: layout }); };
         window.toggleAuthMode = () => { updateState({ isRegistering: !state.isRegistering }); };
         
         // 修正：Auth流程
@@ -3557,6 +3649,12 @@
                     
                     if (state.viewingUid === null) {
                         state.viewingUid = user.uid;
+                    }
+                    
+                    // 新增：載入用戶的卡片佈局
+                    const savedLayout = await loadCardLayoutFromFirebase();
+                    if (savedLayout) {
+                        state.cardLayout = savedLayout;
                     }
                     
                     onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'user_directory'), async (snap) => {
