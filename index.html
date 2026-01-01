@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>借貸管理系統 (ver 2.025.1225 - 新增狀態5協商案件)</title>
+    <title>借貸管理系統 (ver 2.026.0101)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Lucide Icons -->
@@ -12,6 +12,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
     
     <style>
+        
         body { font-family: 'Inter', sans-serif; }
         .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: #f1f1f1; }
@@ -157,6 +158,7 @@
             .mobile-detail-value {
                 font-weight: 500;
                 color: #374151;
+                font-size: 0.875rem; /* 新增：放大字體 */
             }
             
             .mobile-case-actions {
@@ -359,6 +361,7 @@
         // --- Global State ---
         const initialCardLayout = [
             { id: 'totalIncome', label: "總收入 (累計)", type: "primary", icon: "wallet", isCurrency: true, width: 2 },
+            { id: 'netIncome', label: "淨收入", type: "primary", icon: "trending-up", isCurrency: true, width: 1 },
             { id: 'creditAmount', label: "債權總額", type: "primary", icon: "file-text", isCurrency: true, width: 1 },
             { id: 'outstanding', label: "在外本金", type: "warning", icon: "dollar-sign", isCurrency: true, width: 1 },
             { id: 'currentLent', label: "目前放款額", type: "warning", icon: "credit-card", isCurrency: true, width: 1 },
@@ -370,7 +373,8 @@
             { id: 'monthInterestCollected', label: "本月已收息", type: "primary", icon: "check", compact: true, isCurrency: true, width: 1 },
             { id: 'totalManagementFee', label: "本月管理費", type: "primary", icon: "credit-card", isCurrency: true, width: 1 },
             { id: 'badDebtAmount', label: "呆帳金額", type: "critical", icon: "x", isCurrency: true, width: 1 },
-            { id: 'negotiationDue', label: "協商應收款", type: "info", icon: "handshake", isCurrency: true, width: 1 } // 新增協商應收款卡片
+            { id: 'negotiationDue', label: "協商應收款", type: "info", icon: "handshake", isCurrency: true, width: 1 },
+            { id: 'negotiationCollected', label: "協商已收款", type: "info", icon: "handshake", compact: true, isCurrency: true, width: 1 }
         ];
         
         // --- 核心欄位定義 ---
@@ -391,8 +395,8 @@
             { key: 'agent', label: '銀行/人', widthVal: 100 },
             { key: 'terms', label: '期數', widthVal: 60 },
             { key: 'repayDay', label: '每期還款日', widthVal: 80 },
-            { key: 'principalPerTerm', label: '每期還款本金', isCurrency: true, widthVal: 100 },
-            { key: 'interestPerTerm', label: '每期利息', isCurrency: true, widthVal: 100 },
+            { key: 'principalPerTerm', label: "每期還款本金", isCurrency: true, widthVal: 100 },
+            { key: 'interestPerTerm', label: "每期利息", isCurrency: true, widthVal: 100 },
             { key: 'remainingTerms', label: '餘期', isComputed: true, widthVal: 60 },
             { key: 'roiTerms', label: '回本期數', isComputed: true, widthVal: 80 },
             { key: 'totalInterestIncome', label: '利息收入', isCurrency: true, widthVal: 100 },
@@ -405,7 +409,7 @@
             currentUserUid: null,
             currentUserName: 'Guest', 
             isAdmin: false,
-            allowedStatus: ['0', '1', '3', '4', '5'], // 新增狀態5
+            allowedStatus: ['0', '1', '3', '4', '5'],
             viewingUid: null,
             usersDirectory: [],
             
@@ -435,10 +439,10 @@
             // 新增：批次刪除相關狀態
             batchDeleteMode: false,
             selectedCasesForBatch: [],
-            activeCasesFilter: true, // 修改：預設顯示狀態1、2、3和5的案件
+            activeCasesFilter: true,
             
             // 新增：卡片顏色設定
-            cardColors: {} // Store card color preferences
+            cardColors: {}
         };
 
         // Demo Data
@@ -448,7 +452,7 @@
                  { id: 'demo2', caseNumber: '#002', displayId: '#002', borrower: '李大華', status: '4', method: '設定', loanAmount: 500000, disbursed: 450000, interestRate: 3.0, specialRate: 5.0, terms: 0, principalPerTerm: 0, interestPerTerm: 15000, date: '2023-09-15', schedule: '', note: '代管案件，每月僅收息', job: '業務', agent: '李四', ownerUid: 'demo' },
                  { id: 'demo3', caseNumber: '#003', displayId: '#003', borrower: '陳淑芬', status: '3', method: '票貼', loanAmount: 30000, disbursed: 27000, interestRate: 10.0, terms: 3, principalPerTerm: 10000, interestPerTerm: 3000, date: '2023-11-01', schedule: '', note: '已失聯，列為呆帳', job: '自營商', agent: '王五', ownerUid: 'demo' },
                  { id: 'demo4', caseNumber: '#004', displayId: '#004', borrower: '張志豪', status: '0', method: '小額', loanAmount: 20000, disbursed: 20000, interestRate: 0, terms: 1, principalPerTerm: 20000, interestPerTerm: 0, date: '2023-08-01', schedule: '2023-08-05 本金:20000 利息:0', note: '已結清', job: '司機', agent: '趙六', ownerUid: 'demo' },
-                 { id: 'demo5', caseNumber: '#005', displayId: '#005', borrower: '林小美', status: '5', method: '叨簿子', loanAmount: 150000, disbursed: 135000, interestRate: 0, terms: 0, principalPerTerm: 0, interestPerTerm: 0, negotiationPrincipal: 5000, date: '2023-11-15', schedule: '2023-12-15 本金:5000 利息:0', note: '協商還款中，每月還5千本金', job: '服務業', agent: '錢七', ownerUid: 'demo' } // 新增協商案件範例
+                 { id: 'demo5', caseNumber: '#005', displayId: '#005', borrower: '林小美', status: '5', method: '叨簿子', loanAmount: 150000, disbursed: 135000, interestRate: 0, terms: 0, principalPerTerm: 0, interestPerTerm: 0, negotiationPrincipal: 5000, date: '2023-11-15', schedule: '2023-12-15 本金:5000 利息:0\n2024-01-15 本金:6000 利息:0', note: '協商還款中，每月還5千本金', job: '服務業', agent: '錢七', ownerUid: 'demo' }
                ];
         }
 
@@ -459,7 +463,7 @@
             terms: '', repayDay: '', principalPerTerm: '', interestPerTerm: '',
             currentPrincipal: '', currentInterest: '', 
             note: '', schedule: '',
-            negotiationPrincipal: '' // 新增協商本金欄位
+            negotiationPrincipal: ''
         };
         let formData = { ...initialFormState };
 
@@ -473,12 +477,12 @@
             return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
         };
         
-        // 修改：案件編號格式化，現在只是顯示用的序號
+        // 案件編號格式化
         const formatCaseId = (num) => {
             return `#${String(num).padStart(3, '0')}`;
         };
         
-        // 新增：計算顯示編號（根據當前顯示的記錄順序）
+        // 計算顯示編號
         const calculateDisplayIds = (filteredRecords) => {
             return filteredRecords.map((record, index) => {
                 return {
@@ -542,7 +546,7 @@
             }).filter(item => item.date !== null);
         };
 
-        // 修改：外在本金計算公式，修正欠款計算，新增狀態5處理
+        // 修正：外在本金計算公式，確保最小值為0
         const calculateDerivedData = (record) => {
             const loanAmount = Number(record.loanAmount) || 0; 
             const disbursed = Number(record.disbursed) || 0;
@@ -558,9 +562,16 @@
 
             // 狀態4：已結案呆帳
             if (record.status === '4') {
+                let outstanding = record.outstandingPrincipal !== undefined ? Number(record.outstandingPrincipal) : (disbursed - totalPrincipalPaid - totalInterestPaid);
+                let arrears = record.arrears !== undefined ? Number(record.arrears) : (loanAmount - totalPrincipalPaid);
+                
+                // 確保最小值為0
+                outstanding = Math.max(0, outstanding);
+                arrears = Math.max(0, arrears);
+                
                 return {
-                    outstanding: record.outstandingPrincipal !== undefined ? Number(record.outstandingPrincipal) : (disbursed - totalPrincipalPaid - totalInterestPaid),
-                    arrears: record.arrears !== undefined ? Number(record.arrears) : (loanAmount - totalPrincipalPaid),
+                    outstanding,
+                    arrears,
                     remainingTerms: '-', 
                     roiTerms: '-',
                     totalPrincipalPaid,
@@ -570,9 +581,15 @@
 
             // 狀態0：已結案、狀態2：代管中
             if (record.status === '0' || record.status === '2') {
+                let outstanding = 0;
+                let arrears = record.status === '0' ? 0 : (loanAmount - totalPrincipalPaid);
+                
+                // 確保最小值為0
+                arrears = Math.max(0, arrears);
+                
                 return { 
-                    outstanding: 0,
-                    arrears: record.status === '0' ? 0 : (loanAmount - totalPrincipalPaid),
+                    outstanding,
+                    arrears,
                     remainingTerms: '-', 
                     roiTerms: '-',
                     totalPrincipalPaid,
@@ -580,20 +597,21 @@
                 };
             }
 
-            // 狀態5：協商中（新增處理邏輯）
+            // 狀態5：協商中
             if (record.status === '5') {
-                // 協商案件：只還固定本金，沒有利息
                 const negotiationPrincipal = Number(record.negotiationPrincipal) || 0;
                 const totalNegotiationPaid = entries.reduce((sum, e) => sum + e.principal, 0);
+                const totalInterestPaid = entries.reduce((sum, e) => sum + e.interest, 0); // 累計歷史利息收入
                 
-                let outstanding = disbursed - totalNegotiationPaid;
-                if (outstanding < 0) outstanding = 0;
-                
+                let outstanding = disbursed - totalNegotiationPaid - totalInterestPaid;
                 let arrears = loanAmount - totalNegotiationPaid;
                 
-                // 計算剩餘期數（基於協商本金）
+                // 確保最小值為0
+                outstanding = Math.max(0, outstanding);
+                arrears = Math.max(0, arrears);
+                
                 let remainingTerms = '-';
-                if (negotiationPrincipal > 0) {
+                if (negotiationPrincipal > 0 && arrears > 0) {
                     remainingTerms = Math.ceil(arrears / negotiationPrincipal);
                 }
                 
@@ -603,17 +621,19 @@
                     remainingTerms, 
                     roiTerms: remainingTerms,
                     totalPrincipalPaid: totalNegotiationPaid,
-                    totalInterestPaid: 0,
+                    totalInterestPaid: totalInterestPaid, // 保留歷史利息收入
                     isNegotiation: true,
                     negotiationPrincipal
                 };
             }
 
-            // 狀態1、3：進行中或呆帳（保持原有邏輯）
-            let outstanding = disbursed - totalPrincipalPaid - totalInterestPaid; 
-            if (outstanding < 0) outstanding = 0; 
-
+            // 狀態1、3：進行中或呆帳
+            let outstanding = disbursed - totalPrincipalPaid - totalInterestPaid;
             let arrears = loanAmount - totalPrincipalPaid;
+            
+            // 確保最小值為0
+            outstanding = Math.max(0, outstanding);
+            arrears = Math.max(0, arrears);
 
             let remainingTerms = '-'; 
             let roiTerms = "-";
@@ -637,7 +657,6 @@
                     if (termTotal > 0 && outstanding > 0) { 
                         let val = outstanding / termTotal; 
                         if (val < 0) val = 0; 
-                        // 避免 Infinity
                         if (val === Infinity) {
                             roiTerms = "∞";
                         } else {
@@ -659,7 +678,7 @@
                 case '2': return { text: '代管中', color: 'bg-blue-100 text-blue-600' };
                 case '3': return { text: '呆帳', color: 'bg-red-100 text-red-600' };
                 case '4': return { text: '結案(呆)', color: 'bg-orange-100 text-orange-600' };
-                case '5': return { text: '協商中', color: 'bg-purple-100 text-purple-600' }; // 新增狀態5
+                case '5': return { text: '協商中', color: 'bg-purple-100 text-purple-600' };
                 default: return { text: status, color: 'bg-gray-100 text-gray-600' };
             }
         };
@@ -668,7 +687,7 @@
         const updateState = (updates) => { Object.assign(state, updates); renderApp(); };
 
         window.updateStatus4Amount = async (id, field, value) => {
-            const val = Number(value) || 0;
+            const val = Math.max(0, Number(value) || 0); // 確保最小值為0
             const idx = state.records.findIndex(r => r.id === id);
             
             if (idx !== -1) {
@@ -693,6 +712,7 @@
             }
         };
 
+        // 修正：計算統計數據，確保公式正確
         const calculateStats = () => {
             const s = { 
                 totalIncome: 0, creditAmount: 0, outstanding: 0, 
@@ -703,10 +723,29 @@
                 monthDiff: 0, monthInterestDiff: 0, totalManagementFee: 0, 
                 activeCases: 0, unpaidCount: 0, normalClosedCount: 0, closedBadDebtCount: 0, activeBadDebtCount: 0,
                 unpaidRecords: [], closedRecords: [], activeRecords: [], badDebtCases: [], managedCases: 0, managedRecords: [],
-                negotiationCases: 0, negotiationRecords: [], negotiationDue: 0 // 新增協商相關統計
+                negotiationCases: 0, negotiationRecords: [], negotiationDue: 0,
+                negotiationCollected: 0,
+                hasManagedCases: false,
+                
+                // 新增：分項收入統計
+                status1Income: 0,  // 狀態1利息收入
+                status2Income: 0,  // 狀態2管理費收入
+                status3Income: 0,  // 狀態3呆帳已收利息
+                status4Income: 0,  // 狀態4已結案呆帳已收利息
+                status5Income: 0,  // 狀態5協商案件已收利息
+                
+                // 新增：淨收入
+                netIncome: 0,       // 淨收入 = 總收入 - 呆帳金額
+                
+                // 新增：本月實際收款（排除追繳款項）
+                monthActualCollected: 0,
+                monthActualInterestCollected: 0
             };
 
             const uniqueBorrowers = new Set();
+            const now = new Date();
+            const currentMonth = now.getMonth();
+            const currentYear = now.getFullYear();
             
             // Filter records based on Admin View Mode
             let displayRecords = state.records;
@@ -721,103 +760,163 @@
             const filtered = displayRecords.filter(r => 
                 (r.borrower?.toLowerCase().includes(searchTerm) || 
                  r.displayId?.toLowerCase().includes(searchTerm) ||
-                 r.method?.toLowerCase().includes(searchTerm)) // 新增：搜尋方式
+                 r.method?.toLowerCase().includes(searchTerm))
             );
-
-            // 計算本月已收款和本月已收息
-            const now = new Date();
-            const currentMonth = now.getMonth();
-            const currentYear = now.getFullYear();
 
             filtered.forEach(r => {
                 const calc = calculateDerivedData(r); 
                 const principal = Number(r.principalPerTerm) || 0; 
                 const termInterest = Number(r.interestPerTerm) || 0;
-                const negotiationPrincipal = Number(r.negotiationPrincipal) || 0; // 協商本金
+                const negotiationPrincipal = Number(r.negotiationPrincipal) || 0;
                 
-                // 狀態5：協商案件（新增處理邏輯）
+                // 計算利息收入（根據不同狀態）
+                const interestIncome = calc.totalInterestPaid || 0;
+                
+                // 根據狀態累計利息收入
+                if (r.status === '1') {
+                    s.status1Income += interestIncome;
+                } else if (r.status === '2') {
+                    s.status2Income += interestIncome; // 管理費收入
+                } else if (r.status === '3') {
+                    s.status3Income += interestIncome; // 呆帳已收利息
+                } else if (r.status === '4') {
+                    s.status4Income += interestIncome; // 已結案呆帳已收利息
+                } else if (r.status === '5') {
+                    s.status5Income += interestIncome; // 協商案件歷史已收利息
+                }
+                
+                // 總收入累計
+                s.totalIncome += interestIncome;
+
+                // 狀態5：協商案件
                 if (r.status === '5') {
+                    // 債權總額：只計算狀態1、3、5的欠款
                     s.creditAmount += calc.arrears;
-                    s.outstanding += calc.outstanding;
-                    s.currentLent += Number(r.disbursed) || 0;
-                    s.monthDue += negotiationPrincipal; // 協商本金計入本月應收款
-                    s.negotiationDue += negotiationPrincipal; // 記錄協商應收款
-                    s.negotiationCases++; // 計算協商案件數
-                    s.negotiationRecords.push(r); // 添加到協商案件列表
                     
-                    // 檢查本月是否已繳款
+                    // 目前放款額度：只計算狀態1、3、5的借款金額
+                    s.currentLent += Number(r.loanAmount) || 0;
+                    
+                    s.outstanding += calc.outstanding;
+                    
+                    // 協商應收款
+                    s.negotiationDue += negotiationPrincipal;
+                    
+                    // 從還款日程中提取本月已還的協商本金
+                    const entries = parseSchedule(r.schedule);
+                    const currentMonthPaid = entries
+                        .filter(e => e.date && e.date.getFullYear() === currentYear && e.date.getMonth() === currentMonth)
+                        .reduce((sum, e) => sum + e.principal, 0);
+                    
+                    // 協商已收款
+                    s.negotiationCollected += currentMonthPaid;
+                    
+                    // 將協商應收款計入本月應收款總和
+                    s.monthDue += negotiationPrincipal;
+                    // 將協商已收款計入本月實際已收款總和
+                    s.monthActualCollected += currentMonthPaid;
+                    
+                    // 呆帳金額（協商案件也計入呆帳金額）
+                    s.badDebtAmount += calc.arrears;
+                    s.activeBadDebtCount++;
+                    s.badDebtCases.push(r);
+                    s.negotiationCases++;
+                    s.negotiationRecords.push(r);
+                    
+                    // 如果未繳款，則計入本月款差
                     const { isPaid } = getPaymentStatus(r);
-                    if (isPaid) {
-                        s.monthCollected += negotiationPrincipal;
-                    } else {
+                    if (!isPaid) {
                         s.monthDiff += negotiationPrincipal;
                     }
                 }
-                // 狀態1、3、4：正常案件、呆帳、已結案呆帳
-                else if (r.status === '1' || r.status === '3' || r.status === '4') {
+                // 狀態1、3：正常案件、呆帳
+                else if (r.status === '1' || r.status === '3') {
+                     // 債權總額：只計算狀態1、3、5的欠款
                      s.creditAmount += calc.arrears;
+                     
+                     // 目前放款額度：只計算狀態1、3、5的借款金額
+                     s.currentLent += Number(r.loanAmount) || 0;
+                     
                      s.outstanding += calc.outstanding;
-                     s.currentLent += Number(r.disbursed) || 0;
+                     
+                     if (r.status === '1') {
+                         s.monthDue += (principal + termInterest);
+                         s.monthInterestDue += termInterest;
+                     }
+                     
+                     // 呆帳金額
+                     if (r.status === '3') {
+                         s.badDebtAmount += calc.arrears;
+                         s.activeBadDebtCount++;
+                         s.badDebtCases.push(r);
+                     }
                 }
-
-                if (r.status === '1') {
-                    s.monthDue += (principal + termInterest);
-                    s.monthInterestDue += termInterest; 
-                } else if (r.status === '2') {
-                    s.monthDue += termInterest; 
+                // 狀態4：已結案呆帳
+                else if (r.status === '4') {
+                     // 債權總額：狀態4不計入
+                     // 目前放款額度：狀態4不計入
+                     s.outstanding += calc.outstanding;
+                     s.badDebtAmount += calc.arrears;
+                     s.closedBadDebtCount++;
+                     s.badDebtCases.push(r);
+                }
+                // 狀態2：代管案件
+                else if (r.status === '2') {
+                    s.monthDue += termInterest;
+                    s.monthInterestDue += termInterest;
                     s.hasManagedCases = true;
-                    s.totalManagementFee += termInterest; 
-                    s.managedCases++; // 計算代管案件數
-                    s.managedRecords.push(r); // 添加到代管案件列表
+                    s.totalManagementFee += termInterest;
+                    s.managedCases++;
+                    s.managedRecords.push(r);
                 }
 
-                if (r.status === '3' || r.status === '4') {
-                    s.badDebtAmount += calc.arrears;
-                }
-
+                // 案件計數
                 if (r.status === '0') {
                     s.normalClosedCount++; s.closedRecords.push(r);
-                } else if (r.status === '4') {
-                    s.closedBadDebtCount++; s.badDebtCases.push(r);
-                } else if (r.status === '3') {
-                    s.activeBadDebtCount++; s.badDebtCases.push(r);
                 } else if (r.status === '1') {
                     s.activeCases++; s.activeRecords.push(r);
-                    const { isOverdue } = getPaymentStatus(r);
+                    const { isOverdue, isPaid } = getPaymentStatus(r);
                     if (isOverdue) { s.unpaidCount++; s.unpaidRecords.push(r); }
-                    
-                    const { isPaid } = getPaymentStatus(r);
-                    if (!isPaid) {
-                        s.monthDiff += (principal + termInterest);
-                        s.monthInterestDiff += termInterest;
-                    }
                 } else if (r.status === '2') {
                      const { isPaid } = getPaymentStatus(r);
                      if (!isPaid) {
-                        s.monthDiff += termInterest; 
+                        s.monthDiff += termInterest;
+                        s.monthInterestDiff += termInterest;
                      }
-                } else if (r.status === '5') {
-                    // 協商案件：加到活躍案件但不加到正常活躍案件計數
-                    s.activeBadDebtCount++; // 協商案件視為呆帳的一種
-                    s.badDebtCases.push(r);
                 }
 
-                s.totalIncome += calc.totalInterestPaid; 
-                
-                // 計算本月已收款和本月已收息
-                if (r.status === '1' || r.status === '2') {
-                    const { isPaid } = getPaymentStatus(r);
-                    if (isPaid) {
-                        s.monthCollected += (r.status === '2' ? 0 : principal) + termInterest;
-                        s.monthInterestCollected += termInterest;
-                    }
+                // 計算本月實際已收款和本月實際已收息（從還款日程中提取，只計算當月）
+                if (r.status === '1' || r.status === '2' || r.status === '5') {
+                    const entries = parseSchedule(r.schedule);
+                    const currentMonthEntries = entries.filter(e => 
+                        e.date && e.date.getFullYear() === currentYear && e.date.getMonth() === currentMonth
+                    );
+                    
+                    currentMonthEntries.forEach(e => {
+                        s.monthActualCollected += e.principal + e.interest;
+                        s.monthActualInterestCollected += e.interest;
+                    });
                 }
 
                 if (r.borrower) uniqueBorrowers.add(r.borrower);
             });
 
-            s.totalIncome -= s.badDebtAmount; 
             s.borrowers = uniqueBorrowers.size;
+            
+            // 計算淨收入：總收入 - 呆帳金額
+            s.netIncome = s.totalIncome - s.badDebtAmount;
+            
+            // 計算本月款差（應收款 - 本月實際已收款，排除追繳款項）
+            s.monthDiff = s.monthDue - s.monthActualCollected;
+            if (s.monthDiff < 0) s.monthDiff = 0;
+            
+            // 計算本月息差（應收息 - 本月實際已收息，排除追繳款項）
+            s.monthInterestDiff = s.monthInterestDue - s.monthActualInterestCollected;
+            if (s.monthInterestDiff < 0) s.monthInterestDiff = 0;
+            
+            // 本月已收款（顯示用，包括追繳款項）
+            s.monthCollected = s.monthActualCollected;
+            s.monthInterestCollected = s.monthActualInterestCollected;
+            
             return s;
         };
 
@@ -828,6 +927,7 @@
             
             const config = {
                 totalIncome: { label: "總收入 (累計)", value: stats.totalIncome, type: "primary", icon: "wallet", isCurrency: true },
+                netIncome: { label: "淨收入", value: stats.netIncome, type: "primary", icon: "trending-up", isCurrency: true },
                 creditAmount: { label: "債權總額", value: stats.creditAmount, type: "primary", icon: "file-text", isCurrency: true },
                 outstanding: { label: "在外本金", value: stats.outstanding, type: "warning", icon: "dollar-sign", isCurrency: true },
                 currentLent: { label: "目前放款額", value: stats.currentLent, type: "warning", icon: "credit-card", isCurrency: true },
@@ -839,20 +939,21 @@
                 monthInterestCollected: { label: "本月已收息", value: stats.monthInterestCollected, type: "primary", icon: "check", compact: true, isCurrency: true },
                 totalManagementFee: { label: "本月管理費", value: stats.totalManagementFee, type: "primary", icon: "credit-card", isCurrency: true },
                 badDebtAmount: { label: "呆帳金額", value: stats.badDebtAmount, type: "critical", icon: "x", isCurrency: true },
-                negotiationDue: { label: "協商應收款", value: stats.negotiationDue, type: "info", icon: "handshake", isCurrency: true } // 新增協商應收款
+                negotiationDue: { label: "協商應收款", value: stats.negotiationDue, type: "info", icon: "handshake", isCurrency: true },
+                negotiationCollected: { label: "協商已收款", value: stats.negotiationCollected, type: "info", icon: "handshake", compact: true, isCurrency: true }
             };
             if (id === 'totalManagementFee' && !stats.hasManagedCases) return null;
             return { ...config[id], width };
         };
 
-        // 新增：卡片顏色變更函數
+        // 新增：卡片顏色變更函數 - 增加紫色選項
         window.changeCardColor = (e, id) => {
-            e.stopPropagation(); // 防止觸發卡片點擊開啟列表的事件
-            const colors = ['primary', 'warning', 'critical', 'danger', 'info'];
-            const current = state.cardColors[id] || 'primary'; // 預設是 primary
-            const next = colors[(colors.indexOf(current) + 1) % colors.length]; // 循環切換下一個顏色
+            e.stopPropagation();
+            const colors = ['primary', 'warning', 'critical', 'danger', 'info', 'purple']; // 增加紫色
+            const current = state.cardColors[id] || 'primary';
+            const next = colors[(colors.indexOf(current) + 1) % colors.length];
             state.cardColors[id] = next;
-            renderApp(); // 重新渲染畫面
+            renderApp();
         };
 
         window.setActiveTab = (tab) => updateState({ activeTab: tab, modalType: null });
@@ -882,14 +983,14 @@
                     if (passwordInput !== confirmPass) throw new Error("密碼不一致"); 
                     
                     let role = 'user';
-                    let allowedStatus = ['0', '1', '3', '4', '5']; // 新增狀態5
+                    let allowedStatus = ['0', '1', '3', '4', '5'];
                     
                     try {
                         const snapshot = await getDocs(query(userDirCollection));
                         
                         if (snapshot.empty) {
                             role = 'admin';
-                            allowedStatus = ['0', '1', '2', '3', '4', '5']; // 新增狀態5
+                            allowedStatus = ['0', '1', '2', '3', '4', '5'];
                             console.log("第一個用戶，設定為管理員");
                         }
                     } catch (error) {
@@ -951,7 +1052,7 @@
                 currentUserUid: null,
                 currentUserName: 'Guest',
                 isAdmin: false,
-                allowedStatus: ['0', '1', '3', '4', '5'], // 新增狀態5
+                allowedStatus: ['0', '1', '3', '4', '5'],
                 viewingUid: null,
                 usersDirectory: [],
                 isDemoMode: false,
@@ -978,8 +1079,8 @@
                 unpaidFilter: null,
                 batchDeleteMode: false,
                 selectedCasesForBatch: [],
-                activeCasesFilter: true, // 保持預設顯示未結案案件（狀態1、2、3、5）
-                cardColors: {} // 清除顏色設定
+                activeCasesFilter: true,
+                cardColors: {}
             });
             
             formData = { ...initialFormState };
@@ -1023,10 +1124,10 @@
             let filtered = sourceRecords.filter(r => 
                 (r.borrower?.toLowerCase().includes(searchTerm) || 
                  r.displayId?.toLowerCase().includes(searchTerm) ||
-                 r.method?.toLowerCase().includes(searchTerm)) // 新增：搜尋方式
+                 r.method?.toLowerCase().includes(searchTerm))
             );
             
-            // 修正：按日期排序
+            // 按日期排序
             filtered.sort((a, b) => {
                 const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
                 const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
@@ -1036,16 +1137,16 @@
             if (state.unpaidFilter === 'all_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid } = getPaymentStatus(r);
-                    return (r.status === '1' || r.status === '2') && !isPaid; // 修改：包括狀態2
+                    return (r.status === '1' || r.status === '2') && !isPaid;
                 });
             } else if (state.unpaidFilter === 'current_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid, isOverdue } = getPaymentStatus(r);
-                    return (r.status === '1' || r.status === '2') && !isPaid && isOverdue; // 修改：包括狀態2
+                    return (r.status === '1' || r.status === '2') && !isPaid && isOverdue;
                 });
             }
             
-            // 修正：篩選狀態1、2、3和5的案件
+            // 篩選狀態1、2、3和5的案件
             if (state.activeCasesFilter) {
                 filtered = filtered.filter(r => r.status === '1' || r.status === '2' || r.status === '3' || r.status === '5');
             }
@@ -1067,10 +1168,10 @@
             let filtered = sourceRecords.filter(r => 
                 (r.borrower?.toLowerCase().includes(searchTerm) || 
                  r.displayId?.toLowerCase().includes(searchTerm) ||
-                 r.method?.toLowerCase().includes(searchTerm)) // 新增：搜尋方式
+                 r.method?.toLowerCase().includes(searchTerm))
             );
             
-            // 修正：按日期排序
+            // 按日期排序
             filtered.sort((a, b) => {
                 const dateA = a.date ? new Date(a.date.replace(/\//g, '-')) : new Date('9999-12-31');
                 const dateB = b.date ? new Date(b.date.replace(/\//g, '-')) : new Date('9999-12-31');
@@ -1080,16 +1181,16 @@
             if (state.unpaidFilter === 'all_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid } = getPaymentStatus(r);
-                    return (r.status === '1' || r.status === '2') && !isPaid; // 修改：包括狀態2
+                    return (r.status === '1' || r.status === '2') && !isPaid;
                 });
             } else if (state.unpaidFilter === 'current_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid, isOverdue } = getPaymentStatus(r);
-                    return (r.status === '1' || r.status === '2') && !isPaid && isOverdue; // 修改：包括狀態2
+                    return (r.status === '1' || r.status === '2') && !isPaid && isOverdue;
                 });
             }
             
-            // 修正：篩選狀態1、2、3和5的案件
+            // 篩選狀態1、2、3和5的案件
             if (state.activeCasesFilter) {
                 filtered = filtered.filter(r => r.status === '1' || r.status === '2' || r.status === '3' || r.status === '5');
             }
@@ -1118,7 +1219,7 @@
             window.refreshListUI();
         };
 
-        // 修正：顯示所有未結案（狀態1、2、3和5）
+        // 顯示所有未結案（狀態1、2、3和5）
         window.showActiveCases = () => {
             state.activeCasesFilter = true;
             state.unpaidFilter = null;
@@ -1157,7 +1258,7 @@
             let filtered = sourceRecords.filter(r => 
                 (r.borrower?.toLowerCase().includes(searchTerm) || 
                  r.displayId?.toLowerCase().includes(searchTerm) ||
-                 r.method?.toLowerCase().includes(searchTerm)) // 新增：搜尋方式
+                 r.method?.toLowerCase().includes(searchTerm))
             );
             
             filtered.sort((a, b) => {
@@ -1169,16 +1270,16 @@
             if (state.unpaidFilter === 'all_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid } = getPaymentStatus(r);
-                    return (r.status === '1' || r.status === '2') && !isPaid; // 修改：包括狀態2
+                    return (r.status === '1' || r.status === '2') && !isPaid;
                 });
             } else if (state.unpaidFilter === 'current_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid, isOverdue } = getPaymentStatus(r);
-                    return (r.status === '1' || r.status === '2') && !isPaid && isOverdue; // 修改：包括狀態2
+                    return (r.status === '1' || r.status === '2') && !isPaid && isOverdue;
                 });
             }
             
-            // 修正：篩選狀態1、2、3和5的案件
+            // 篩選狀態1、2、3和5的案件
             if (state.activeCasesFilter) {
                 filtered = filtered.filter(r => r.status === '1' || r.status === '2' || r.status === '3' || r.status === '5');
             }
@@ -1290,7 +1391,7 @@
                 formData.principalPerTerm = '';
                 formData.interestPerTerm = '';
                 formData.repayDay = '';
-                formData.method = '叨簿子'; // 預設方式
+                formData.method = '叨簿子';
             }
             
             // 如果狀態從5改為其他，清除協商本金
@@ -1307,17 +1408,17 @@
                         const interestToClient = Math.round(loan * (specialRate - interestRate));
                         // 管理費 = 借款金額 * 利率
                         const managementFee = Math.round(loan * interestRate);
-                        formData.principalPerTerm = principalPerTerm; // 應付本金部分
-                        formData.interestPerTerm = managementFee; // 管理費（我們收）
-                        formData.expectedPayment = interestToClient + principalPerTerm; // 應付總金額（給委託人）
+                        formData.principalPerTerm = principalPerTerm;
+                        formData.interestPerTerm = managementFee;
+                        formData.expectedPayment = interestToClient + principalPerTerm;
                     } else {
                         // 非叨簿子：應付 = (借款利率-利率)*借款金額
                         const interestToClient = Math.round(loan * (specialRate - interestRate));
                         // 管理費 = 借款金額 * 利率
                         const managementFee = Math.round(loan * interestRate);
                         formData.principalPerTerm = 0;
-                        formData.interestPerTerm = managementFee; // 管理費（我們收）
-                        formData.expectedPayment = interestToClient; // 應付總金額（給委託人）
+                        formData.interestPerTerm = managementFee;
+                        formData.expectedPayment = interestToClient;
                     }
                 } 
                 else if (formData.status === '5') {
@@ -1343,13 +1444,13 @@
                         const interestToClient = Math.round(loan * (specialRate - interestRate));
                         const managementFee = Math.round(loan * interestRate);
                         formData.principalPerTerm = principalPerTerm;
-                        formData.interestPerTerm = managementFee; // 管理費（我們收）
+                        formData.interestPerTerm = managementFee;
                         formData.expectedPayment = interestToClient + principalPerTerm;
                     } else {
                         const interestToClient = Math.round(loan * (specialRate - interestRate));
                         const managementFee = Math.round(loan * interestRate);
                         formData.principalPerTerm = 0;
-                        formData.interestPerTerm = managementFee; // 管理費（我們收）
+                        formData.interestPerTerm = managementFee;
                         formData.expectedPayment = interestToClient;
                     }
                 } 
@@ -1622,7 +1723,7 @@
             let repaymentCases = state.records.filter(r => {
                 if (r.status === '1') return true;
                 if (r.status === '2' && state.allowedStatus.includes('2')) return true;
-                if (r.status === '5') return true; // 協商案件也可以還款
+                if (r.status === '5') return true;
                 return false;
             });
             
@@ -1636,14 +1737,14 @@
                     container.classList.remove('hidden'); 
                     const filteredOptions = repaymentCases.filter(r => { 
                         const { isPaid } = getPaymentStatus(r); 
-                        const matchesSearch = (r.borrower||'').includes(val) || (r.displayId||'').includes(val) || (r.method||'').includes(val); // 新增：搜尋方式
+                        const matchesSearch = (r.borrower||'').includes(val) || (r.displayId||'').includes(val) || (r.method||'').includes(val);
                         return matchesSearch && !isPaid; 
                     }); 
                     if (filteredOptions.length > 0) { 
                         const html = filteredOptions.map(r => { 
                             let amount = 0;
                             if (r.status === '5') {
-                                amount = Number(r.negotiationPrincipal) || 0; // 協商案件用協商本金
+                                amount = Number(r.negotiationPrincipal) || 0;
                             } else {
                                 amount = (Number(r.currentPrincipal)||Number(r.principalPerTerm)||0) + (Number(r.currentInterest)||Number(r.interestPerTerm)||0);
                             }
@@ -1694,7 +1795,7 @@
             const record = state.records.find(r => r.id === state.selectedRepaymentId); 
             if (!record) return; 
             
-            const newEntry = `${state.repaymentDate} 本金:${Number(state.repaymentPrincipal)} 利息:${Number(state.repaymentInterest)}`;
+            const newEntry = `${state.repaymentDate} 本金:${Math.max(0, Number(state.repaymentPrincipal))} 利息:${Math.max(0, Number(state.repaymentInterest))}`;
             const currentSchedule = record.schedule || ''; 
             const newSchedule = (currentSchedule ? currentSchedule + '\n' : '') + newEntry;
             const sortedSchedule = sortScheduleLines(newSchedule.split('\n').filter(x=>x.trim())).join('\n'); 
@@ -1738,8 +1839,9 @@
                 
                 // 根據狀態計算利息收入
                 if (r.status === '5') {
-                    // 協商案件沒有利息收入
-                    data.totalInterestIncome = 0;
+                    // 協商案件歷史利息收入（從日程中計算）
+                    const entries = parseSchedule(sorted);
+                    data.totalInterestIncome = entries.reduce((sum, e) => sum + e.interest, 0);
                 } else {
                     data.totalInterestIncome = count * (Number(r.interestPerTerm)||0); 
                 }
@@ -1787,16 +1889,16 @@
                      { id: 'demo2', caseNumber: '#002', displayId: '#002', borrower: '李大華', status: '4', method: '設定', loanAmount: 500000, disbursed: 450000, interestRate: 3.0, specialRate: 5.0, terms: 0, principalPerTerm: 0, interestPerTerm: 15000, date: '2023-09-15', schedule: '', note: '代管案件，每月僅收息', job: '業務', agent: '李四', ownerUid: 'demo' },
                      { id: 'demo3', caseNumber: '#003', displayId: '#003', borrower: '陳淑芬', status: '3', method: '票貼', loanAmount: 30000, disbursed: 27000, interestRate: 10.0, terms: 3, principalPerTerm: 10000, interestPerTerm: 3000, date: '2023-11-01', schedule: '', note: '已失聯，列為呆帳', job: '自營商', agent: '王五', ownerUid: 'demo' },
                      { id: 'demo4', caseNumber: '#004', displayId: '#004', borrower: '張志豪', status: '0', method: '小額', loanAmount: 20000, disbursed: 20000, interestRate: 0, terms: 1, principalPerTerm: 20000, interestPerTerm: 0, date: '2023-08-01', schedule: '2023-08-05 本金:20000 利息:0', note: '已結清', job: '司機', agent: '趙六', ownerUid: 'demo' },
-                     { id: 'demo5', caseNumber: '#005', displayId: '#005', borrower: '林小美', status: '5', method: '叨簿子', loanAmount: 150000, disbursed: 135000, interestRate: 0, terms: 0, principalPerTerm: 0, interestPerTerm: 0, negotiationPrincipal: 5000, date: '2023-11-15', schedule: '2023-12-15 本金:5000 利息:0', note: '協商還款中，每月還5千本金', job: '服務業', agent: '錢七', ownerUid: 'demo' } // 新增協商案件範例
+                     { id: 'demo5', caseNumber: '#005', displayId: '#005', borrower: '林小美', status: '5', method: '叨簿子', loanAmount: 150000, disbursed: 135000, interestRate: 0, terms: 0, principalPerTerm: 0, interestPerTerm: 0, negotiationPrincipal: 5000, date: '2023-11-15', schedule: '2023-12-15 本金:5000 利息:0\n2024-01-15 本金:6000 利息:0', note: '協商還款中，每月還5千本金', job: '服務業', agent: '錢七', ownerUid: 'demo' }
                 ];
             }
             
             updateState({ 
                 isDemoMode: true, 
                 currentUser: 'Guest', 
-                allowedStatus: ['0', '1', '3', '4', '5'], // 新增狀態5
+                allowedStatus: ['0', '1', '3', '4', '5'],
                 isAdmin: false,
-                activeCasesFilter: true // 預設顯示未結案案件（狀態1、2、3、5）
+                activeCasesFilter: true
             }); 
         };
         window.openModalList = (type) => updateState({ modalType: type });
@@ -1817,7 +1919,7 @@
             const filtered = sourceRecords.filter(r => 
                 (r.borrower?.toLowerCase().includes(searchTerm) || 
                  r.displayId?.toLowerCase().includes(searchTerm) ||
-                 r.method?.toLowerCase().includes(searchTerm)) // 新增：搜尋方式
+                 r.method?.toLowerCase().includes(searchTerm))
             );
             
             // 按日期排序
@@ -2059,7 +2161,7 @@
                 
                 if (status === '5') {
                     // 協商案件：設定協商本金
-                    negotiationPrincipal = Math.round(loanAmount * 0.05); // 預設為借款金額的5%
+                    negotiationPrincipal = Math.round(loanAmount * 0.05);
                 } else if (status !== '2' && terms > 0) {
                     principalPerTerm = Math.round(loanAmount / terms);
                 }
@@ -2106,7 +2208,10 @@
                 
                 const sortedSchedule = sortScheduleLines(scheduleLines).join('\n');
                 const repaidTermsCount = extractDatesFromSchedule(sortedSchedule).length;
-                const totalInterestIncome = status === '5' ? 0 : repaidTermsCount * interestPerTerm;
+                const totalInterestIncome = status === '5' ? scheduleLines.reduce((sum, line) => {
+                    const match = line.match(/利息:(\d+)/);
+                    return sum + (match ? parseInt(match[1], 10) : 0);
+                }, 0) : repaidTermsCount * interestPerTerm;
                 
                 if (repaidTermsCount > 0) {
                     const allDates = extractDatesFromSchedule(sortedSchedule);
@@ -2116,9 +2221,7 @@
 
                 // 修正：確保放款日期被正確解析
                 let loanDate = rows[MAP_ROWS.LOAN_DATE]?.[col] || '';
-                // 嘗試格式化日期
                 if (loanDate) {
-                    // 嘗試轉換各種日期格式
                     const dateMatch = loanDate.match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
                     if (dateMatch) {
                         const year = dateMatch[1];
@@ -2131,7 +2234,7 @@
                 const newCase = {
                     status: status,
                     method: rows[MAP_ROWS.CATEGORY]?.[col] || '',
-                    date: loanDate, // 修正：使用格式化後的日期
+                    date: loanDate,
                     borrower: borrowerName || `未知借款人_${col}`,
                     job: rows[MAP_ROWS.JOB]?.[col] || '',
                     loanAmount: loanAmount,
@@ -2265,7 +2368,7 @@
             let filtered = sourceRecords.filter(r => 
                 (r.borrower?.toLowerCase().includes(searchTerm) || 
                  r.displayId?.toLowerCase().includes(searchTerm) ||
-                 r.method?.toLowerCase().includes(searchTerm)) // 新增：搜尋方式
+                 r.method?.toLowerCase().includes(searchTerm))
             );
             
             // 修正排序邏輯：按放款日期排序（從舊到新）
@@ -2278,16 +2381,16 @@
             if (state.unpaidFilter === 'all_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid } = getPaymentStatus(r);
-                    return (r.status === '1' || r.status === '2' || r.status === '5') && !isPaid; // 修改：包括狀態2和5
+                    return (r.status === '1' || r.status === '2' || r.status === '5') && !isPaid;
                 });
             } else if (state.unpaidFilter === 'current_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid, isOverdue } = getPaymentStatus(r);
-                    return (r.status === '1' || r.status === '2' || r.status === '5') && !isPaid && isOverdue; // 修改：包括狀態2和5
+                    return (r.status === '1' || r.status === '2' || r.status === '5') && !isPaid && isOverdue;
                 });
             }
             
-            // 修正：篩選狀態1、2、3和5的案件
+            // 篩選狀態1、2、3和5的案件
             if (state.activeCasesFilter) {
                 filtered = filtered.filter(r => r.status === '1' || r.status === '2' || r.status === '3' || r.status === '5');
             }
@@ -2306,14 +2409,13 @@
                 const calc = calculateDerivedData(r);
                 const statusLbl = getStatusLabel(r.status);
                 
-                // 根據狀態設定借款人名字顏色
                 let borrowerColorClass = '';
                 switch(r.status) {
-                    case '0': borrowerColorClass = 'text-gray-400'; break;
+                    case '0': borrowerColorClass = 'text-gray-300'; break;
                     case '2': borrowerColorClass = 'text-blue-600'; break;
                     case '3': borrowerColorClass = 'text-red-600'; break;
                     case '4': borrowerColorClass = 'text-orange-600'; break;
-                    case '5': borrowerColorClass = 'text-purple-600'; break; // 協商案件用紫色
+                    case '5': borrowerColorClass = 'text-purple-600'; break;
                     default: borrowerColorClass = 'text-gray-800';
                 }
                 
@@ -2333,7 +2435,7 @@
                 
                 let termAmount = 0;
                 if (r.status === '5') {
-                    termAmount = Number(r.negotiationPrincipal) || 0; // 協商案件用協商本金
+                    termAmount = Number(r.negotiationPrincipal) || 0;
                 } else {
                     termAmount = (Number(r.principalPerTerm) || 0) + (Number(r.interestPerTerm) || 0);
                 }
@@ -2480,7 +2582,7 @@
                 let filtered = sourceRecords.filter(r => 
                     (r.borrower?.toLowerCase().includes(searchTerm) || 
                      r.displayId?.toLowerCase().includes(searchTerm) ||
-                     r.method?.toLowerCase().includes(searchTerm)) // 新增：搜尋方式
+                     r.method?.toLowerCase().includes(searchTerm))
                 );
                 
                 // 修正排序邏輯：按照放款日期排序
@@ -2493,16 +2595,16 @@
                 if (state.unpaidFilter === 'all_unpaid') {
                     filtered = filtered.filter(r => {
                         const { isPaid } = getPaymentStatus(r);
-                        return (r.status === '1' || r.status === '2' || r.status === '5') && !isPaid; // 修改：包括狀態2和5
+                        return (r.status === '1' || r.status === '2' || r.status === '5') && !isPaid;
                     });
                 } else if (state.unpaidFilter === 'current_unpaid') {
                     filtered = filtered.filter(r => {
                         const { isPaid, isOverdue } = getPaymentStatus(r);
-                        return (r.status === '1' || r.status === '2' || r.status === '5') && !isPaid && isOverdue; // 修改：包括狀態2和5
+                        return (r.status === '1' || r.status === '2' || r.status === '5') && !isPaid && isOverdue;
                     });
                 }
                 
-                // 修正：篩選狀態1、2、3和5的案件
+                // 篩選狀態1、2、3和5的案件
                 if (state.activeCasesFilter) {
                     filtered = filtered.filter(r => r.status === '1' || r.status === '2' || r.status === '3' || r.status === '5');
                 }
@@ -2519,18 +2621,17 @@
                         const { isPaid, isOverdue } = getPaymentStatus(r);
                         const calc = calculateDerivedData(r);
                         const statusLbl = getStatusLabel(r.status);
-                        const isBadDebt = r.status === '3';
+                        const isBadDebt = r.status === '3';  // 修改：只將狀態3視為呆帳
                         const isClosedBadDebt = r.status === '4';
                         const isNegotiation = r.status === '5';
                         
-                        // 根據狀態設定借款人名字顏色
                         let borrowerColorClass = '';
                         switch(r.status) {
-                            case '0': borrowerColorClass = 'text-gray-400'; break;
+                            case '0': borrowerColorClass = 'text-gray-300'; break;
                             case '2': borrowerColorClass = 'text-blue-600'; break;
                             case '3': borrowerColorClass = 'text-red-600'; break;
                             case '4': borrowerColorClass = 'text-orange-600'; break;
-                            case '5': borrowerColorClass = 'text-purple-600'; break; // 協商案件用紫色
+                            case '5': borrowerColorClass = 'text-purple-600'; break;
                             default: borrowerColorClass = 'text-gray-800';
                         }
                         
@@ -2548,15 +2649,13 @@
                                 val = r.displayId || r.caseNumber || ''; 
                             }
 
-                            // 修正：狀態3（呆帳）顯示原始金額，不再歸零
-                            // 修正：狀態2（代管案件）放款金額顯示為0
+                            // 狀態2（代管案件）放款金額顯示為0
                             if (field.key === 'disbursed' && r.status === '2') {
                                 val = 0;
                             }
 
                             if (isBadDebt) {
                                 // 狀態3（呆帳）保持原始金額顯示
-                                // 移除歸零邏輯
                             }
                             if (isClosedBadDebt) {
                                 if (field.key === 'principalPerTerm' || field.key === 'interestPerTerm') val = 0;
@@ -2565,10 +2664,13 @@
                             if (field.isComputed) {
                                 if (field.key === 'paymentStatus') {
                                     if (isBadDebt) {
+                                        // 狀態3：呆帳顯示法務程序中
                                         content = `<div class="flex items-center justify-center p-2"><span class="text-gray-500 font-bold flex items-center text-xs bg-gray-100 px-2 py-1 rounded border border-gray-200 cursor-not-allowed" title="此案件已轉為呆帳"><i data-lucide="gavel" class="w-3 h-3 mr-1"></i>法務程序中</span></div>`;
                                     } else if (isNegotiation) {
+                                        // 狀態5：協商中顯示正常的繳款狀態（與狀態1相同）
                                         content = `<div onclick="window.handlePaymentStatusClick('${r.id}')" class="flex items-center justify-center cursor-pointer p-2 rounded transition-colors ${isPaid ? 'hover:bg-emerald-200' : 'hover:bg-red-100'}" title="點擊前往還款頁面">${isPaid ? `<span class="text-emerald-600 font-bold flex items-center"><i data-lucide="check" class="w-3 h-3 mr-1"></i>已繳清</span>` : `<span class="font-bold flex items-center ${isOverdue ? 'text-red-700' : 'text-red-600'}">${isOverdue ? '<i data-lucide="alert-triangle" class="w-3 h-3 mr-1"></i>逾期未繳' : '未繳'}</span>`}</div>`;
                                     } else {
+                                        // 狀態1、2：正常顯示
                                         content = `<div onclick="window.handlePaymentStatusClick('${r.id}')" class="flex items-center justify-center cursor-pointer p-2 rounded transition-colors ${isPaid ? 'hover:bg-emerald-200' : 'hover:bg-red-100'}" title="點擊前往還款頁面">${isPaid ? `<span class="text-emerald-600 font-bold flex items-center"><i data-lucide="check" class="w-3 h-3 mr-1"></i>已繳清</span>` : `<span class="font-bold flex items-center ${isOverdue ? 'text-red-700' : 'text-red-600'}">${isOverdue ? '<i data-lucide="alert-triangle" class="w-3 h-3 mr-1"></i>逾期未繳' : '未繳'}</span>`}</div>`;
                                     }
                                 } else if (field.key === 'remainingTerms') content = calc.remainingTerms;
@@ -2589,7 +2691,6 @@
                             } else if (field.key === 'repaidTerms') {
                                 content = `<div class="cursor-pointer text-blue-600 font-bold hover:underline flex items-center justify-center" onclick="window.openModal('schedule', '${r.id}')" title="點擊查看還款日程">${parseSchedule(r.schedule).length} <i data-lucide="calendar-days" class="w-3 h-3 ml-1"></i></div>`;
                             } else if (field.key === 'borrower') {
-                                // 借款人欄位：根據狀態設定顏色
                                 content = `<span class="${borrowerColorClass} font-bold">${val}</span>`;
                             } else if (field.isEditable) {
                                 const icon = field.key === 'note' ? 'file-pen-line' : 'calendar-days';
@@ -2598,10 +2699,12 @@
                                 if (val === undefined || val === null) val = '-';
                                 if (field.key === 'totalInterestIncome') val = calc.totalInterestPaid;
                                 
-                                // 狀態5：在利息欄位顯示協商本金
-                                if (field.key === 'interestPerTerm' && isNegotiation) {
+                                // 狀態5：在本金欄位顯示協商本金，利息欄位顯示0
+                                if (field.key === 'principalPerTerm' && isNegotiation) {
                                     const negotiationVal = r.negotiationPrincipal || 0;
                                     content = `<span class="font-mono text-purple-600 font-bold">協商:$${formatNumber(negotiationVal)}</span>`;
+                                } else if (field.key === 'interestPerTerm' && isNegotiation) {
+                                    content = `<span class="font-mono text-gray-400">0</span>`;
                                 } else {
                                     content = `<span class="${field.isCurrency ? 'font-mono' : ''} ${field.isDanger && Number(val) > 0 ? 'text-red-600 font-bold' : 'text-gray-700'}">${field.isCurrency ? '$' : ''}${formatNumber(val)}</span>`;
                                 }
@@ -2618,7 +2721,7 @@
                             }
                             if (field.key === 'paymentStatus' && isOverdue && !isBadDebt) stickyClass = stickyClass.replace('bg-white', 'bg-emerald-100');
 
-                            return `<td class="py-2 px-2 text-xs text-center ${field.font || ''} ${stickyClass}" style="${style}" title="${val||''}">${content}</td>`;
+                            return `<td class="py-2 px-2 text-sm text-center ${field.font || ''} ${stickyClass}" style="${style}" title="${val||''}">${content}</td>`;
                         }).join('');
 
                         return `<tr class="hover:bg-gray-50 transition-colors">${batchSelectCell}${regularCells}</tr>`;
@@ -2644,7 +2747,7 @@
                 let filtered = sourceRecords.filter(r => 
                     (r.borrower?.toLowerCase().includes(searchTerm) || 
                      r.displayId?.toLowerCase().includes(searchTerm) ||
-                     r.method?.toLowerCase().includes(searchTerm)) // 新增：搜尋方式
+                     r.method?.toLowerCase().includes(searchTerm))
                 );
                 
                 // 修正排序邏輯
@@ -2657,16 +2760,16 @@
                 if (state.unpaidFilter === 'all_unpaid') {
                     filtered = filtered.filter(r => {
                         const { isPaid } = getPaymentStatus(r);
-                        return (r.status === '1' || r.status === '2' || r.status === '5') && !isPaid; // 修改：包括狀態2和5
+                        return (r.status === '1' || r.status === '2' || r.status === '5') && !isPaid;
                     });
                 } else if (state.unpaidFilter === 'current_unpaid') {
                     filtered = filtered.filter(r => {
                         const { isPaid, isOverdue } = getPaymentStatus(r);
-                        return (r.status === '1' || r.status === '2' || r.status === '5') && !isPaid && isOverdue; // 修改：包括狀態2和5
+                        return (r.status === '1' || r.status === '2' || r.status === '5') && !isPaid && isOverdue;
                     });
                 }
                 
-                // 修正：篩選狀態1、2、3和5的案件
+                // 篩選狀態1、2、3和5的案件
                 if (state.activeCasesFilter) {
                     filtered = filtered.filter(r => r.status === '1' || r.status === '2' || r.status === '3' || r.status === '5');
                 }
@@ -2750,7 +2853,7 @@
         }
 
         function renderDashboard(stats) {
-            // 顏色映射函數
+            // 顏色映射函數 - 增加紫色
             const getColor = (id, defaultType) => {
                 const c = state.cardColors[id] || defaultType;
                 const map = {
@@ -2759,6 +2862,7 @@
                     critical: { bg: "bg-red-200", border: "border-red-300", text: "text-red-900", iconBg: "bg-red-300", iconColor: "text-red-700" },
                     danger: { bg: "bg-rose-50", border: "border-rose-200", text: "text-rose-900", iconBg: "bg-rose-100", iconColor: "text-rose-600" },
                     info: { bg: "bg-blue-100", border: "border-blue-300", text: "text-blue-900", iconBg: "bg-blue-200", iconColor: "text-blue-700" },
+                    purple: { bg: "bg-purple-100", border: "border-purple-300", text: "text-purple-900", iconBg: "bg-purple-200", iconColor: "text-purple-700" } // 新增紫色
                 };
                 return map[c] || map.primary;
             };
@@ -2793,16 +2897,19 @@
                 <header class="flex justify-between items-center mb-6">
                     <div>
                         <h2 class="text-2xl font-bold text-gray-800">財務營運儀表板</h2>
+                        <p class="text-sm text-gray-500 mt-1">債權總額: 狀態1+3+5欠款總和 | 目前放款額: 狀態1+3+5借款金額總和</p>
                     </div>
-                    ${state.isAdmin ? `
-                    <div class="flex items-center space-x-2 bg-white p-1 rounded-lg border border-gray-200 shadow-sm">
-                        <span class="text-xs font-bold text-gray-500 px-2">檢視對象:</span>
-                        <select onchange="window.updateState({viewingUid: this.value})" class="text-sm border-none bg-transparent outline-none font-bold text-blue-600">
-                            <option value="${state.currentUserUid}">我的帳號</option>
-                            <option value="all" ${state.viewingUid === 'all' ? 'selected' : ''}>全部用戶</option>
-                            ${state.usersDirectory.filter(u => u.uid !== state.currentUserUid).map(u => `<option value="${u.uid}" ${state.viewingUid === u.uid ? 'selected' : ''}>${u.username}</option>`).join('')}
-                        </select>
-                    </div>` : ''}
+                    <div class="flex items-center space-x-2">
+                        ${state.isAdmin ? `
+                        <div class="flex items-center space-x-2 bg-white p-1 rounded-lg border border-gray-200 shadow-sm">
+                            <span class="text-xs font-bold text-gray-500 px-2">檢視對象:</span>
+                            <select onchange="window.updateState({viewingUid: this.value})" class="text-sm border-none bg-transparent outline-none font-bold text-blue-600">
+                                <option value="${state.currentUserUid}">我的帳號</option>
+                                <option value="all" ${state.viewingUid === 'all' ? 'selected' : ''}>全部用戶</option>
+                                ${state.usersDirectory.filter(u => u.uid !== state.currentUserUid).map(u => `<option value="${u.uid}" ${state.viewingUid === u.uid ? 'selected' : ''}>${u.username}</option>`).join('')}
+                            </select>
+                        </div>` : ''}
+                    </div>
                 </header>
                 <div class="grid grid-cols-1 lg:grid-cols-4 gap-3">
                     <div class="lg:col-span-3 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">
@@ -3149,7 +3256,7 @@
             let repaymentCases = state.records.filter(r => {
                 if (r.status === '1') return true;
                 if (r.status === '2' && state.allowedStatus.includes('2')) return true;
-                if (r.status === '5') return true; // 協商案件也可以還款
+                if (r.status === '5') return true;
                 return false;
             });
             
@@ -3161,7 +3268,7 @@
             return `<div class="max-w-2xl mx-auto bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden animate-fade-in mt-8"><div class="bg-gradient-to-r from-blue-600 to-indigo-700 p-6 text-white flex justify-between items-center"><div><h2 class="text-xl font-bold flex items-center"><i data-lucide="banknote" class="w-6 h-6 mr-2"></i> 還款入帳作業</h2><p class="text-blue-100 text-sm mt-1">選取案件連結後，輸入每期還款資訊</p></div><button onclick="window.setActiveTab('list')" class="px-4 py-2 bg-white/20 text-white rounded-lg hover:bg-white/30 transition-colors flex items-center text-sm font-medium"><i data-lucide="chevron-left" class="w-4 h-4 mr-1"></i>回上一頁</button></div><div class="p-8 space-y-6"><div class="space-y-2 relative"><label class="text-sm font-bold text-gray-600 flex items-center"><i data-lucide="search" class="w-4 h-4 mr-1"></i> 選擇案件 (僅顯示進行中${state.allowedStatus.includes('2') ? '/代管' : ''}/協商)</label><div class="relative"><input type="text" placeholder="輸入編號或姓名搜尋..." value="${state.repaymentSearchTerm}" oninput="window.updateRepaymentSearch(this.value)" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none pl-10"/><i data-lucide="search" class="absolute left-3 top-3.5 text-gray-400 w-4 h-4"></i></div>${dropdownHtml}<select id="repaymentSelect" onchange="window.handleRepaymentSelect(this.value)" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white mt-2" ${isSearching ? 'hidden' : ''}><option value="">-- 請選擇案件 --</option>${repaymentCases.map(r => { 
                 let amount = 0;
                 if (r.status === '5') {
-                    amount = Number(r.negotiationPrincipal) || 0; // 協商案件用協商本金
+                    amount = Number(r.negotiationPrincipal) || 0;
                 } else {
                     amount = (Number(r.principalPerTerm)||0) + (Number(r.interestPerTerm)||0);
                 }
@@ -3197,7 +3304,7 @@
                     else if (state.modalType === 'closed') filteredRecs = currentStats.closedRecords;
                     else if (state.modalType === 'badDebt') filteredRecs = currentStats.badDebtCases;
                     else if (state.modalType === 'managed') filteredRecs = currentStats.managedRecords;
-                    else if (state.modalType === 'negotiation') filteredRecs = currentStats.negotiationRecords; // 新增：協商案件
+                    else if (state.modalType === 'negotiation') filteredRecs = currentStats.negotiationRecords;
                     else {
                         let baseRecords = state.records;
                         if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
@@ -3212,6 +3319,7 @@
                         else if (state.modalType === 'monthDue') filteredRecs = baseRecords.filter(r => r.status === '1' || r.status === '2' || r.status === '5');
                         else if (state.modalType === 'totalManagementFee') filteredRecs = baseRecords.filter(r => r.status === '2');
                         else if (state.modalType === 'totalIncome') filteredRecs = baseRecords.filter(r => calculateDerivedData(r).totalInterestPaid > 0);
+                        else if (state.modalType === 'netIncome') filteredRecs = baseRecords.filter(r => calculateDerivedData(r).totalInterestPaid > 0); // 淨收入案件列表
                         else if (state.modalType === 'monthCollected') {
                              filteredRecs = baseRecords.filter(r => {
                                  const { isPaid } = getPaymentStatus(r);
@@ -3231,7 +3339,7 @@
                              });
                         }
                         else if (state.modalType === 'badDebtAmount') { 
-                             filteredRecs = baseRecords.filter(r => r.status === '3' || r.status === '4');
+                             filteredRecs = baseRecords.filter(r => r.status === '3' || r.status === '4' || r.status === '5');
                         }
                         else if (state.modalType === 'monthInterestDue') {
                              filteredRecs = baseRecords.filter(r => r.status === '1');
@@ -3244,6 +3352,12 @@
                         }
                         else if (state.modalType === 'negotiationDue') {
                              filteredRecs = baseRecords.filter(r => r.status === '5');
+                        }
+                        else if (state.modalType === 'negotiationCollected') {
+                             filteredRecs = baseRecords.filter(r => {
+                                 const { isPaid } = getPaymentStatus(r);
+                                 return isPaid && r.status === '5';
+                             });
                         }
                         else filteredRecs = baseRecords.filter(r => r.status === '1' || r.status === '2' || r.status === '5');
                     }
@@ -3264,6 +3378,9 @@
                     customRowBuilder = (r, calc, status) => `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId || r.caseNumber || ''})</span></td><td class="p-2 text-right text-red-600 font-mono">${formatNumber(calc.arrears)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td><td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td></tr>`;
                     
                     if (state.modalType === 'totalIncome') {
+                         customHeaders = `<tr><th class="p-2">借款人</th><th class="p-2 text-right">累計利息/管理費</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr>`;
+                         customRowBuilder = (r, calc, status) => `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${r.borrower}</td><td class="p-2 text-right text-emerald-600 font-mono font-bold">${formatNumber(calc.totalInterestPaid)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td><td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td></tr>`;
+                    } else if (state.modalType === 'netIncome') {
                          customHeaders = `<tr><th class="p-2">借款人</th><th class="p-2 text-right">累計利息/管理費</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr>`;
                          customRowBuilder = (r, calc, status) => `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${r.borrower}</td><td class="p-2 text-right text-emerald-600 font-mono font-bold">${formatNumber(calc.totalInterestPaid)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td><td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td></tr>`;
                     } else if (state.modalType === 'outstanding') {
@@ -3405,6 +3522,17 @@
                                  <td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td>
                                </tr>`;
                            }
+                    } else if (state.modalType === 'negotiationCollected') {
+                         customHeaders = `<tr><th class="p-2">借款人</th><th class="p-2 text-right">協商已收款</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr>`;
+                         customRowBuilder = (r, calc, status) => {
+                             const np = Number(r.negotiationPrincipal)||0;
+                             return `<tr class="hover:bg-gray-50 transition-colors">
+                                 <td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId || r.caseNumber || ''})</span></td>
+                                 <td class="p-2 text-right font-mono font-bold text-purple-600">${formatNumber(np)}</td>
+                                 <td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td>
+                                 <td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td>
+                               </tr>`;
+                           }
                     }
 
                     modalHtml += `<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 animate-fade-in backdrop-blur-sm"><div class="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col"><div class="p-4 flex justify-between items-center text-white shrink-0 bg-gradient-to-r from-blue-600 to-indigo-600"><h3 class="font-bold flex items-center"><i data-lucide="list" class="w-5 h-5 mr-2"></i> 案件列表</h3><button onclick="window.updateState({modalType: null})" class="hover:bg-white/20 p-1 rounded"><i data-lucide="x" class="w-5 h-5"></i></button></div><div class="p-0 overflow-y-auto flex-1"><table class="w-full text-left border-collapse"><thead class="bg-gray-50 text-gray-500 text-xs uppercase sticky top-0">${customHeaders}</thead><tbody class="divide-y divide-gray-100 text-sm">${filteredWithDisplayIds.map(r => { const calc = calculateDerivedData(r); const status = getStatusLabel(r.status); return customRowBuilder(r, calc, status); }).join('')}</tbody></table></div></div></div>`;
@@ -3442,10 +3570,10 @@
                             
                             if (newIsAdmin !== state.isAdmin) {
                                 state.isAdmin = newIsAdmin;
-                                state.allowedStatus = myProfile.allowedStatus || ['0', '1', '3', '4', '5']; // 新增狀態5
+                                state.allowedStatus = myProfile.allowedStatus || ['0', '1', '3', '4', '5'];
                                 renderApp();
                             } else {
-                                state.allowedStatus = myProfile.allowedStatus || ['0', '1', '3', '4', '5']; // 新增狀態5
+                                state.allowedStatus = myProfile.allowedStatus || ['0', '1', '3', '4', '5'];
                                 if (state.isAdmin) renderApp();
                             }
                         }
@@ -3455,7 +3583,7 @@
                             try {
                                 await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'user_directory', state.currentUserUid), {
                                     role: 'admin',
-                                    allowedStatus: ['0', '1', '2', '3', '4', '5'] // 新增狀態5
+                                    allowedStatus: ['0', '1', '2', '3', '4', '5']
                                 });
                             } catch (e) {
                                 console.error("Self-healing failed:", e);
@@ -3493,7 +3621,7 @@
                         currentUserUid: null,
                         currentUserName: 'Guest',
                         isAdmin: false,
-                        allowedStatus: ['0', '1', '3', '4', '5'], // 新增狀態5
+                        allowedStatus: ['0', '1', '3', '4', '5'],
                         viewingUid: null,
                         usersDirectory: [],
                         isDemoMode: false,
@@ -3520,8 +3648,8 @@
                         unpaidFilter: null,
                         batchDeleteMode: false,
                         selectedCasesForBatch: [],
-                        activeCasesFilter: true, // 保持預設顯示未結案案件（狀態1、2、3、5）
-                        cardColors: {} // 清除顏色設定
+                        activeCasesFilter: true,
+                        cardColors: {}
                     });
                     
                     formData = { ...initialFormState };
