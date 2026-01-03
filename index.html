@@ -2098,7 +2098,7 @@
         window.handleRepaymentSelect = (id) => { 
             const record = state.records.find(r => r.id === id); 
             if (record) { 
-                const { isPaid } = getPaymentStatus(r); 
+                const { isPaid } = getPaymentStatus(record); 
                 let defP = 0;
                 let defI = 0;
                 
@@ -2210,7 +2210,11 @@
         
         window.updateScheduleLine = (index, value) => { state.tempScheduleLines[index] = value; }; 
         window.deleteScheduleLine = (index) => { state.tempScheduleLines.splice(index, 1); renderApp(); };
-        window.handlePaymentStatusClick = (id) => { window.handleRepaymentSelect(id); updateState({ activeTab: 'repayment' }); };
+        // 修正：修正繳款狀態點擊事件 - 確保正確連結到還款輸入頁面
+        window.handlePaymentStatusClick = (id) => { 
+            window.handleRepaymentSelect(id); 
+            updateState({ activeTab: 'repayment' }); 
+        };
         
         // 修正：進入 demo 模式 - 確保狀態正確
         window.enterDemoMode = () => { 
@@ -2923,7 +2927,7 @@
             }).join('');
         };
 
-        // 修正：refreshListUI 函數，確保案件排序正確
+        // 修正：refreshListUI 函數，確保案件排序正確並修正繳款狀態點擊問題
         window.refreshListUI = () => {
             const tbody = document.getElementById('loanListBody');
             const mobileContainer = document.getElementById('mobileListContainer');
@@ -3050,7 +3054,7 @@
                                         // 狀態5：協商中顯示正常的繳款狀態（與狀態1相同）
                                         content = `<div onclick="window.handlePaymentStatusClick('${r.id}')" class="flex items-center justify-center cursor-pointer p-2 rounded transition-colors ${isPaid ? 'hover:bg-emerald-200' : 'hover:bg-red-100'}" title="點擊前往還款頁面">${isPaid ? `<span class="text-emerald-600 font-bold flex items-center"><i data-lucide="check" class="w-3 h-3 mr-1"></i>已繳清</span>` : `<span class="font-bold flex items-center ${isOverdue ? 'text-red-700' : 'text-red-600'}">${isOverdue ? '<i data-lucide="alert-triangle" class="w-3 h-3 mr-1"></i>逾期未繳' : '未繳'}</span>`}</div>`;
                                     } else {
-                                        // 狀態1、2：正常顯示
+                                        // 狀態1、2：正常顯示 - 修正：確保點擊事件正確
                                         content = `<div onclick="window.handlePaymentStatusClick('${r.id}')" class="flex items-center justify-center cursor-pointer p-2 rounded transition-colors ${isPaid ? 'hover:bg-emerald-200' : 'hover:bg-red-100'}" title="點擊前往還款頁面">${isPaid ? `<span class="text-emerald-600 font-bold flex items-center"><i data-lucide="check" class="w-3 h-3 mr-1"></i>已繳清</span>` : `<span class="font-bold flex items-center ${isOverdue ? 'text-red-700' : 'text-red-600'}">${isOverdue ? '<i data-lucide="alert-triangle" class="w-3 h-3 mr-1"></i>逾期未繳' : '未繳'}</span>`}</div>`;
                                     }
                                 } else if (field.key === 'remainingTerms') content = calc.remainingTerms;
@@ -3311,17 +3315,10 @@
                         </div>
                         <p class="text-sm text-gray-500 mt-1">債權總額: 狀態1+3+5欠款總和 | 目前放款額: 狀態1+3+5借款金額總和</p>
                     </div>
-                    <div class="flex items-center space-x-2">
-                        ${state.isAdmin && !state.isDemoMode ? `
-                        <div class="flex items-center space-x-2 bg-white p-1 rounded-lg border border-gray-200 shadow-sm">
-                            <span class="text-xs font-bold text-gray-500 px-2">檢視對象:</span>
-                            <select onchange="window.updateState({viewingUid: this.value})" class="text-sm border-none bg-transparent outline-none font-bold text-blue-600">
-                                <option value="${state.currentUserUid}">我的帳號</option>
-                                <option value="all" ${state.viewingUid === 'all' ? 'selected' : ''}>全部用戶</option>
-                                ${state.usersDirectory.filter(u => u.uid !== state.currentUserUid).map(u => `<option value="${u.uid}" ${state.viewingUid === u.uid ? 'selected' : ''}>${u.username}</option>`).join('')}
-                            </select>
-                        </div>` : ''}
-                    </div>
+                    <!-- 新增：右上角回上一頁按鈕 -->
+                    <button onclick="window.goBack()" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors flex items-center text-sm font-medium">
+                        <i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁
+                    </button>
                 </header>
                 <div class="grid grid-cols-1 lg:grid-cols-4 gap-3">
                     <div class="lg:col-span-3 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">
@@ -3431,59 +3428,64 @@
                         </button>
                         <h2 class="text-2xl font-bold text-gray-800">案件資料列表</h2>
                     </div>
-                    <div class="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2 items-center w-full sm:w-auto">
-                        <div class="flex space-x-2 w-full sm:w-auto">
-                            <button onclick="window.filterUnpaidCases('all_unpaid')" class="bg-red-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-red-700 flex items-center shadow-sm ${state.unpaidFilter === 'all_unpaid' ? 'ring-2 ring-red-300' : ''}">
-                                <i data-lucide="alert-circle" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">所有未繳</span>
-                            </button>
-                            <button onclick="window.filterUnpaidCases('current_unpaid')" class="bg-amber-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-amber-700 flex items-center shadow-sm ${state.unpaidFilter === 'current_unpaid' ? 'ring-2 ring-amber-300' : ''}">
-                                <i data-lucide="alert-triangle" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">逾期未繳</span>
-                            </button>
-                            <button onclick="window.showActiveCases()" class="bg-blue-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-blue-700 flex items-center shadow-sm ${state.activeCasesFilter ? 'ring-2 ring-blue-300' : ''}">
-                                <i data-lucide="list-checks" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">所有未結案</span>
-                            </button>
-                            <button onclick="window.showAllCases()" class="bg-gray-500 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-gray-600 flex items-center shadow-sm ${!state.unpaidFilter && !state.activeCasesFilter && !state.statusFilter ? 'ring-2 ring-gray-300' : ''}">
-                                <i data-lucide="database" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">全部案件</span>
-                            </button>
+                    <!-- 新增：右上角回上一頁按鈕 -->
+                    <button onclick="window.goBack()" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors flex items-center text-sm font-medium">
+                        <i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁
+                    </button>
+                </header>
+                
+                <div class="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2 items-center w-full sm:w-auto mb-4">
+                    <div class="flex space-x-2 w-full sm:w-auto">
+                        <button onclick="window.filterUnpaidCases('all_unpaid')" class="bg-red-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-red-700 flex items-center shadow-sm ${state.unpaidFilter === 'all_unpaid' ? 'ring-2 ring-red-300' : ''}">
+                            <i data-lucide="alert-circle" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">所有未繳</span>
+                        </button>
+                        <button onclick="window.filterUnpaidCases('current_unpaid')" class="bg-amber-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-amber-700 flex items-center shadow-sm ${state.unpaidFilter === 'current_unpaid' ? 'ring-2 ring-amber-300' : ''}">
+                            <i data-lucide="alert-triangle" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">逾期未繳</span>
+                        </button>
+                        <button onclick="window.showActiveCases()" class="bg-blue-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-blue-700 flex items-center shadow-sm ${state.activeCasesFilter ? 'ring-2 ring-blue-300' : ''}">
+                            <i data-lucide="list-checks" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">所有未結案</span>
+                        </button>
+                        <button onclick="window.showAllCases()" class="bg-gray-500 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-gray-600 flex items-center shadow-sm ${!state.unpaidFilter && !state.activeCasesFilter && !state.statusFilter ? 'ring-2 ring-gray-300' : ''}">
+                            <i data-lucide="database" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">全部案件</span>
+                        </button>
+                    </div>
+                    
+                    <div class="flex space-x-2 items-center w-full sm:w-auto">
+                        <div class="relative flex-1 sm:w-64">
+                            <i data-lucide="search" class="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4"></i>
+                            <input type="text" id="searchInput" placeholder="搜尋編號、姓名、方式..." value="${state.searchTerm}" class="w-full pl-10 pr-4 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" oninput="window.handleSearch(this.value)">
                         </div>
                         
-                        <div class="flex space-x-2 items-center w-full sm:w-auto">
-                            <div class="relative flex-1 sm:w-64">
-                                <i data-lucide="search" class="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4"></i>
-                                <input type="text" id="searchInput" placeholder="搜尋編號、姓名、方式..." value="${state.searchTerm}" class="w-full pl-10 pr-4 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" oninput="window.handleSearch(this.value)">
-                            </div>
-                            
-                            <!-- 修改：狀態篩選下拉選單，只有在有權限使用狀態2時才顯示「所有代管 (狀態2)」選項 -->
-                            <div class="relative">
-                                <select onchange="window.filterByStatus(this.value)" class="appearance-none w-full sm:w-40 bg-white border border-gray-300 rounded-lg py-2 pl-3 pr-8 text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
-                                    <option value="" ${!state.statusFilter ? 'selected' : ''}>狀態篩選...</option>
-                                    <option value="bad_debt" ${state.statusFilter === 'bad_debt' ? 'selected' : ''}>所有呆帳 (狀態3+4)</option>
-                                    ${state.allowedStatus.includes('2') ? `<option value="managed" ${state.statusFilter === 'managed' ? 'selected' : ''}>所有代管 (狀態2)</option>` : ''}
-                                    <option value="closed" ${state.statusFilter === 'closed' ? 'selected' : ''}>所有結清 (狀態0)</option>
-                                    <option value="negotiation" ${state.statusFilter === 'negotiation' ? 'selected' : ''}>所有協商 (狀態5)</option>
-                                </select>
-                                <i data-lucide="chevron-down" class="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none"></i>
-                            </div>
-                            
-                            <input type="file" id="csvFileInput" accept=".csv" class="hidden" onchange="window.handleFileChange(event)" />
-                            <button onclick="window.handleFileSelect()" class="bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-700 flex items-center shadow-sm disabled:opacity-50 text-sm" ${state.isImporting ? 'disabled' : ''} title="匯入垂直格式報表">
-                                <i data-lucide="upload" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">匯入 CSV</span>
-                            </button>
-                            
-                            <button onclick="window.exportToExcel()" class="bg-teal-600 text-white px-3 py-2 rounded-lg hover:bg-teal-700 flex items-center shadow-sm whitespace-nowrap text-sm" title="匯出垂直格式報表（與匯入格式相同）">
-                                <i data-lucide="download" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">匯出 CSV</span>
-                            </button>
-
-                            <button onclick="window.toggleBatchDeleteMode()" class="bg-red-600 text-white px-3 py-2 rounded-lg hover:bg-red-700 flex items-center shadow-sm text-sm ${state.batchDeleteMode ? 'ring-2 ring-red-300' : ''}">
-                                <i data-lucide="trash-2" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">批次刪除</span>
-                            </button>
-
-                            <button onclick="window.openNewForm()" class="bg-emerald-600 text-white px-3 py-2 rounded-lg hover:bg-emerald-700 flex items-center shadow-sm text-sm">
-                                <i data-lucide="plus" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">新增</span>
-                            </button>
+                        <!-- 修改：狀態篩選下拉選單，只有在有權限使用狀態2時才顯示「所有代管 (狀態2)」選項 -->
+                        <div class="relative">
+                            <select onchange="window.filterByStatus(this.value)" class="appearance-none w-full sm:w-40 bg-white border border-gray-300 rounded-lg py-2 pl-3 pr-8 text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
+                                <option value="" ${!state.statusFilter ? 'selected' : ''}>狀態篩選...</option>
+                                <option value="bad_debt" ${state.statusFilter === 'bad_debt' ? 'selected' : ''}>所有呆帳 (狀態3+4)</option>
+                                ${state.allowedStatus.includes('2') ? `<option value="managed" ${state.statusFilter === 'managed' ? 'selected' : ''}>所有代管 (狀態2)</option>` : ''}
+                                <option value="closed" ${state.statusFilter === 'closed' ? 'selected' : ''}>所有結清 (狀態0)</option>
+                                <option value="negotiation" ${state.statusFilter === 'negotiation' ? 'selected' : ''}>所有協商 (狀態5)</option>
+                            </select>
+                            <i data-lucide="chevron-down" class="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none"></i>
                         </div>
+                        
+                        <input type="file" id="csvFileInput" accept=".csv" class="hidden" onchange="window.handleFileChange(event)" />
+                        <button onclick="window.handleFileSelect()" class="bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-700 flex items-center shadow-sm disabled:opacity-50 text-sm" ${state.isImporting ? 'disabled' : ''} title="匯入垂直格式報表">
+                            <i data-lucide="upload" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">匯入 CSV</span>
+                        </button>
+                        
+                        <button onclick="window.exportToExcel()" class="bg-teal-600 text-white px-3 py-2 rounded-lg hover:bg-teal-700 flex items-center shadow-sm whitespace-nowrap text-sm" title="匯出垂直格式報表（與匯入格式相同）">
+                            <i data-lucide="download" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">匯出 CSV</span>
+                        </button>
+
+                        <button onclick="window.toggleBatchDeleteMode()" class="bg-red-600 text-white px-3 py-2 rounded-lg hover:bg-red-700 flex items-center shadow-sm text-sm ${state.batchDeleteMode ? 'ring-2 ring-red-300' : ''}">
+                            <i data-lucide="trash-2" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">批次刪除</span>
+                        </button>
+
+                        <button onclick="window.openNewForm()" class="bg-emerald-600 text-white px-3 py-2 rounded-lg hover:bg-emerald-700 flex items-center shadow-sm text-sm">
+                            <i data-lucide="plus" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">新增</span>
+                        </button>
                     </div>
-                </header>
+                </div>
                 
                 ${batchDeletePanel}
                 
@@ -3550,14 +3552,20 @@
 
         function renderUserManagement() {
              return `<div class="max-w-6xl mx-auto animate-fade-in">
-                <header class="mb-6 flex items-center">
-                    <button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁">
-                        <i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i>
-                    </button>
-                    <div>
-                        <h2 class="text-2xl font-bold text-gray-800">用戶權限管理</h2>
-                        <p class="text-sm text-gray-500">僅管理員可見，設定誰可以使用「代管」功能，並管理用戶帳號。</p>
+                <header class="mb-6 flex justify-between items-center">
+                    <div class="flex items-center">
+                        <button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁">
+                            <i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i>
+                        </button>
+                        <div>
+                            <h2 class="text-2xl font-bold text-gray-800">用戶權限管理</h2>
+                            <p class="text-sm text-gray-500">僅管理員可見，設定誰可以使用「代管」功能，並管理用戶帳號。</p>
+                        </div>
                     </div>
+                    <!-- 新增：右上角回上一頁按鈕 -->
+                    <button onclick="window.goBack()" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors flex items-center text-sm font-medium">
+                        <i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁
+                    </button>
                 </header>
                 
                 <div class="mb-4 flex flex-wrap gap-2">
@@ -3645,7 +3653,10 @@
                      </button>
                      <h3 class="font-bold text-gray-800 flex items-center"><i data-lucide="${isEdit ? 'edit-2' : 'plus'}" class="w-4 h-4 mr-2"></i> ${isEdit ? '編輯案件' : '新增案件'}</h3>
                  </div>
-                 <button onclick="window.setActiveTab('list')" class="text-gray-400 hover:text-gray-600"><i data-lucide="x" class="w-5 h-5"></i></button>
+                 <!-- 修改：右上角改為回上一頁按鈕 -->
+                 <button onclick="window.goBack()" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors flex items-center text-sm font-medium">
+                     <i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁
+                 </button>
              </div>
              <div class="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-sm flex-1 overflow-y-auto custom-scrollbar">
                  <div class="lg:col-span-4 bg-gray-50 p-3 rounded-lg border border-gray-200"><h4 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 border-b border-gray-200 pb-1">基本與聯絡資料</h4><div class="grid grid-cols-2 md:grid-cols-4 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">借款人</label><input type="text" id="input_borrower" value="${formData.borrower}" oninput="window.updateFormData('borrower', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">身分證字號</label><input type="text" id="input_idNumber" value="${formData.idNumber}" oninput="window.updateFormData('idNumber', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">工作</label><input type="text" id="input_job" value="${formData.job}" oninput="window.updateFormData('job', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">經辦人</label><input type="text" id="input_agent" value="${formData.agent}" oninput="window.updateFormData('agent', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div class="md:col-span-2"><label class="block text-[10px] text-gray-500 mb-0.5">住址</label><input type="text" id="input_address" value="${formData.address}" oninput="window.updateFormData('address', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">電話</label><input type="text" id="input_telephone" value="${formData.telephone}" oninput="window.updateFormData('telephone', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">手機</label><input type="text" id="input_mobile" value="${formData.mobile}" oninput="window.updateFormData('mobile', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div></div></div>
@@ -3708,7 +3719,8 @@
                          </div>
                      </div>` : ''}
              </div>
-             <div class="bg-white px-6 py-4 flex justify-end items-center gap-6 border-t border-gray-100 shrink-0 mt-auto">
+             <!-- 修改：將按鈕移到右下角 -->
+             <div class="bg-white px-6 py-4 w-full flex justify-end items-center gap-6 border-t border-gray-100 shrink-0 mt-auto">
                  <button onclick="window.setActiveTab('list')" class="text-gray-500 hover:text-gray-800 text-sm font-medium transition-colors">取消</button>
                  <button onclick="window.handleSaveForm()" class="px-6 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 shadow-sm flex items-center font-bold text-sm transition-transform active:scale-95"><i data-lucide="save" class="w-4 h-4 mr-2"></i>儲存資料</button>
              </div>
@@ -3744,7 +3756,7 @@
                             <p class="text-blue-100 text-sm mt-1">選取案件連結後，輸入每期還款資訊</p>
                         </div>
                     </div>
-                    <button onclick="window.setActiveTab('list')" class="px-4 py-2 bg-white/20 text-white rounded-lg hover:bg-white/30 transition-colors flex items-center text-sm font-medium"><i data-lucide="chevron-left" class="w-4 h-4 mr-1"></i>回上一頁</button>
+                    <button onclick="window.goBack()" class="px-4 py-2 bg-white/20 text-white rounded-lg hover:bg-white/30 transition-colors flex items-center text-sm font-medium"><i data-lucide="arrow-left" class="w-4 h-4 mr-1"></i>回上一頁</button>
                 </div>
                 <div class="p-8 space-y-6">
                     <div class="space-y-2 relative">
