@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>借貸管理系統 (ver 2.026.0101)</title>
+    <title>借貸管理系統 (ver 2.026.0103)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Lucide Icons -->
@@ -12,7 +12,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
     
     <style>
-        
+        /* 原有的樣式保持不變 */
         body { font-family: 'Inter', sans-serif; }
         .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: #f1f1f1; }
@@ -442,7 +442,16 @@
             activeCasesFilter: true,
             
             // 新增：卡片顏色設定
-            cardColors: {}
+            cardColors: {},
+            
+            // 新增：歷史記錄
+            history: ['dashboard'],
+            
+            // 新增：狀態篩選
+            statusFilter: null,
+            
+            // 新增：防止 demo 模式被重置的標誌
+            demoModeLocked: !firebaseAvailable
         };
 
         // Demo Data
@@ -684,7 +693,70 @@
         };
 
         // --- Logic ---
-        const updateState = (updates) => { Object.assign(state, updates); renderApp(); };
+        const updateState = (updates) => { 
+            // 記錄歷史記錄
+            if (updates.activeTab && updates.activeTab !== state.activeTab) {
+                state.history.push(state.activeTab);
+                if (state.history.length > 10) {
+                    state.history.shift();
+                }
+            }
+            
+            Object.assign(state, updates); 
+            renderApp(); 
+        };
+
+        // 新增：回到上一頁功能
+        window.goBack = () => {
+            if (state.history.length > 1) {
+                const previousTab = state.history.pop();
+                const currentTab = state.history[state.history.length - 1];
+                updateState({ activeTab: currentTab });
+            } else {
+                // 如果沒有歷史記錄，回到儀表板
+                updateState({ activeTab: 'dashboard' });
+            }
+        };
+
+        // 新增：狀態篩選功能
+        window.filterByStatus = (statusType) => {
+            state.statusFilter = statusType;
+            state.currentPage = 1;
+            state.searchTerm = '';
+            state.unpaidFilter = null;
+            state.activeCasesFilter = false;
+            window.refreshListUI();
+        };
+
+        // 新增：複製案件功能
+        window.duplicateCase = () => {
+            // 複製當前表單資料
+            const originalFormData = { ...formData };
+            
+            // 創建複製的資料，清空案件編號和ID
+            const duplicatedData = {
+                ...originalFormData,
+                caseNumber: '', // 清空案件編號
+                displayId: '', // 清空顯示編號
+                schedule: '', // 清空還款日程（新案件應該從頭開始）
+                lastRepaymentDate: '', // 清空最後還款日期
+                repaidTerms: 0, // 重置還款期數
+                totalInterestIncome: 0, // 重置利息收入
+                note: originalFormData.note ? `${originalFormData.note} (複製)` : '複製案件' // 在備註中標記
+            };
+            
+            // 更新表單資料
+            formData = duplicatedData;
+            
+            // 清空編輯記錄，變成新增案件模式
+            state.editingRecord = null;
+            
+            // 顯示成功訊息
+            window.showSuccess("已複製案件資料，請修改必要資訊後儲存為新案件");
+            
+            // 重新渲染表單
+            renderApp();
+        };
 
         // 新增：保存卡片布局到 Firebase
         const saveCardLayoutToFirebase = async (layout) => {
@@ -855,7 +927,11 @@
             
             // Filter records based on Admin View Mode
             let displayRecords = state.records;
-            if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
+            
+            // 修正：在 demo 模式下，只顯示 demo 資料
+            if (state.isDemoMode) {
+                displayRecords = state.records.filter(r => r.ownerUid === 'demo');
+            } else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
                 displayRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
             } else if (!state.isAdmin && !state.isDemoMode) {
                  displayRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
@@ -1105,6 +1181,9 @@
                     
                     window.showSuccess(role === 'admin' ? "註冊成功！您是本系統的管理員。" : "註冊成功！您是本系統的普通用戶。");
                     
+                    // 登入成功後，確保退出 demo 模式
+                    updateState({ isDemoMode: false, demoModeLocked: false });
+                    
                 } else { 
                     const q = query(userDirCollection, where("username", "==", usernameInput));
                     const querySnapshot = await getDocs(q);
@@ -1120,6 +1199,9 @@
                         const targetEmail = userDoc.data().email; 
                         await signInWithEmailAndPassword(auth, targetEmail, passwordInput); 
                     } 
+                    
+                    // 登入成功後，確保退出 demo 模式
+                    updateState({ isDemoMode: false, demoModeLocked: false });
                 } 
             } catch (err) { 
                 window.showError(err.message); 
@@ -1131,7 +1213,7 @@
             document.getElementById('confirm-modal')?.classList.add('hidden');
             document.getElementById('loading-modal')?.classList.add('hidden');
             
-            if (firebaseAvailable) { 
+            if (firebaseAvailable && !state.isDemoMode) { 
                 try { 
                     await signOut(auth); 
                 } catch (e) { 
@@ -1148,6 +1230,7 @@
                 viewingUid: null,
                 usersDirectory: [],
                 isDemoMode: false,
+                demoModeLocked: false,
                 isRegistering: false,
                 authLoading: false,
                 activeTab: 'dashboard',
@@ -1172,7 +1255,9 @@
                 batchDeleteMode: false,
                 selectedCasesForBatch: [],
                 activeCasesFilter: true,
-                cardColors: {}
+                cardColors: {},
+                history: ['dashboard'],
+                statusFilter: null
             });
             
             formData = { ...initialFormState };
@@ -1200,13 +1285,17 @@
         window.openNewForm = () => { formData = { ...initialFormState }; updateState({ editingRecord: null, activeTab: 'form' }); };
         window.startEdit = (id) => { const record = state.records.find(r => r.id === id); if (record) { formData = { ...record }; updateState({ editingRecord: record, activeTab: 'form' }); } };
         
-        window.handleSearch = (val) => { state.searchTerm = val; state.currentPage = 1; state.unpaidFilter = null; window.refreshListUI(); };
+        window.handleSearch = (val) => { state.searchTerm = val; state.currentPage = 1; state.unpaidFilter = null; state.statusFilter = null; window.refreshListUI(); };
         window.changePage = (delta) => { state.currentPage += delta; window.refreshListUI(); };
         
         window.goToFirstPage = () => { state.currentPage = 1; window.refreshListUI(); };
         window.goToLastPage = () => { 
             let sourceRecords = state.records;
-            if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
+            
+            // 修正：在 demo 模式下，只顯示 demo 資料
+            if (state.isDemoMode) {
+                sourceRecords = state.records.filter(r => r.ownerUid === 'demo');
+            } else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
                 sourceRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
             } else if (!state.isAdmin && !state.isDemoMode) {
                 sourceRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
@@ -1229,17 +1318,28 @@
             if (state.unpaidFilter === 'all_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid } = getPaymentStatus(r);
-                    return (r.status === '1' || r.status === '2') && !isPaid;
+                    return (r.status === '1' || r.status === '2' || r.status === '5') && !isPaid;
                 });
             } else if (state.unpaidFilter === 'current_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid, isOverdue } = getPaymentStatus(r);
-                    return (r.status === '1' || r.status === '2') && !isPaid && isOverdue;
+                    return (r.status === '1' || r.status === '2' || r.status === '5') && !isPaid && isOverdue;
                 });
             }
             
+            // 狀態篩選
+            if (state.statusFilter === 'bad_debt') {
+                filtered = filtered.filter(r => r.status === '3' || r.status === '4');
+            } else if (state.statusFilter === 'managed') {
+                filtered = filtered.filter(r => r.status === '2');
+            } else if (state.statusFilter === 'closed') {
+                filtered = filtered.filter(r => r.status === '0');
+            } else if (state.statusFilter === 'negotiation') {
+                filtered = filtered.filter(r => r.status === '5');
+            }
+            
             // 篩選狀態1、2、3和5的案件
-            if (state.activeCasesFilter) {
+            if (state.activeCasesFilter && !state.statusFilter) {
                 filtered = filtered.filter(r => r.status === '1' || r.status === '2' || r.status === '3' || r.status === '5');
             }
             
@@ -1250,7 +1350,11 @@
         
         window.goToPage = (pageNum) => { 
             let sourceRecords = state.records;
-            if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
+            
+            // 修正：在 demo 模式下，只顯示 demo 資料
+            if (state.isDemoMode) {
+                sourceRecords = state.records.filter(r => r.ownerUid === 'demo');
+            } else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
                 sourceRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
             } else if (!state.isAdmin && !state.isDemoMode) {
                 sourceRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
@@ -1273,17 +1377,28 @@
             if (state.unpaidFilter === 'all_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid } = getPaymentStatus(r);
-                    return (r.status === '1' || r.status === '2') && !isPaid;
+                    return (r.status === '1' || r.status === '2' || r.status === '5') && !isPaid;
                 });
             } else if (state.unpaidFilter === 'current_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid, isOverdue } = getPaymentStatus(r);
-                    return (r.status === '1' || r.status === '2') && !isPaid && isOverdue;
+                    return (r.status === '1' || r.status === '2' || r.status === '5') && !isPaid && isOverdue;
                 });
             }
             
+            // 狀態篩選
+            if (state.statusFilter === 'bad_debt') {
+                filtered = filtered.filter(r => r.status === '3' || r.status === '4');
+            } else if (state.statusFilter === 'managed') {
+                filtered = filtered.filter(r => r.status === '2');
+            } else if (state.statusFilter === 'closed') {
+                filtered = filtered.filter(r => r.status === '0');
+            } else if (state.statusFilter === 'negotiation') {
+                filtered = filtered.filter(r => r.status === '5');
+            }
+            
             // 篩選狀態1、2、3和5的案件
-            if (state.activeCasesFilter) {
+            if (state.activeCasesFilter && !state.statusFilter) {
                 filtered = filtered.filter(r => r.status === '1' || r.status === '2' || r.status === '3' || r.status === '5');
             }
             
@@ -1300,6 +1415,7 @@
             state.currentPage = 1;
             state.searchTerm = '';
             state.activeCasesFilter = false;
+            state.statusFilter = null;
             window.refreshListUI();
         };
         
@@ -1308,6 +1424,7 @@
             state.searchTerm = '';
             state.currentPage = 1;
             state.activeCasesFilter = false;
+            state.statusFilter = null;
             window.refreshListUI();
         };
 
@@ -1317,6 +1434,7 @@
             state.unpaidFilter = null;
             state.searchTerm = '';
             state.currentPage = 1;
+            state.statusFilter = null;
             window.refreshListUI();
         };
 
@@ -1340,7 +1458,11 @@
 
         window.selectAllVisibleCasesForBatch = () => {
             let sourceRecords = state.records;
-            if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
+            
+            // 修正：在 demo 模式下，只顯示 demo 資料
+            if (state.isDemoMode) {
+                sourceRecords = state.records.filter(r => r.ownerUid === 'demo');
+            } else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
                 sourceRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
             } else if (!state.isAdmin && !state.isDemoMode) {
                 sourceRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
@@ -1362,17 +1484,28 @@
             if (state.unpaidFilter === 'all_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid } = getPaymentStatus(r);
-                    return (r.status === '1' || r.status === '2') && !isPaid;
+                    return (r.status === '1' || r.status === '2' || r.status === '5') && !isPaid;
                 });
             } else if (state.unpaidFilter === 'current_unpaid') {
                 filtered = filtered.filter(r => {
                     const { isPaid, isOverdue } = getPaymentStatus(r);
-                    return (r.status === '1' || r.status === '2') && !isPaid && isOverdue;
+                    return (r.status === '1' || r.status === '2' || r.status === '5') && !isPaid && isOverdue;
                 });
             }
             
+            // 狀態篩選
+            if (state.statusFilter === 'bad_debt') {
+                filtered = filtered.filter(r => r.status === '3' || r.status === '4');
+            } else if (state.statusFilter === 'managed') {
+                filtered = filtered.filter(r => r.status === '2');
+            } else if (state.statusFilter === 'closed') {
+                filtered = filtered.filter(r => r.status === '0');
+            } else if (state.statusFilter === 'negotiation') {
+                filtered = filtered.filter(r => r.status === '5');
+            }
+            
             // 篩選狀態1、2、3和5的案件
-            if (state.activeCasesFilter) {
+            if (state.activeCasesFilter && !state.statusFilter) {
                 filtered = filtered.filter(r => r.status === '1' || r.status === '2' || r.status === '3' || r.status === '5');
             }
             
@@ -1819,6 +1952,11 @@
                 return false;
             });
             
+            // 在 demo 模式下，只顯示 demo 資料
+            if (state.isDemoMode) {
+                repaymentCases = repaymentCases.filter(r => r.ownerUid === 'demo');
+            }
+            
             const container = document.getElementById('repaymentDropdownContainer'); 
             const select = document.getElementById('repaymentSelect'); 
             if (container && select) { 
@@ -1974,8 +2112,21 @@
         window.deleteScheduleLine = (index) => { state.tempScheduleLines.splice(index, 1); renderApp(); };
         window.handlePaymentStatusClick = (id) => { window.handleRepaymentSelect(id); updateState({ activeTab: 'repayment' }); };
         
+        // 修正：進入 demo 模式 - 確保狀態正確
         window.enterDemoMode = () => { 
-            if(state.records.length === 0) { 
+            updateState({ 
+                isDemoMode: true, 
+                demoModeLocked: true, // 鎖定 demo 模式
+                currentUser: 'Guest', 
+                allowedStatus: ['0', '1', '3', '4', '5'],
+                isAdmin: false,
+                activeCasesFilter: true,
+                currentUserUid: 'demo',
+                viewingUid: 'demo'
+            });
+            
+            // 確保只有 demo 資料
+            if(state.records.length === 0 || !state.records.some(r => r.ownerUid === 'demo')) { 
                 state.records = [
                      { id: 'demo1', caseNumber: '#001', displayId: '#001', borrower: '王小明', status: '1', method: '叨簿子', loanAmount: 100000, disbursed: 90000, interestRate: 5.0, terms: 10, principalPerTerm: 10000, interestPerTerm: 5000, date: '2023-10-01', schedule: '2023-11-01 本金:10000 利息:5000\n2023-12-01 本金:10000 利息:5000', note: '正常繳款中', job: '工程師', agent: '張三', ownerUid: 'demo' },
                      { id: 'demo2', caseNumber: '#002', displayId: '#002', borrower: '李大華', status: '4', method: '設定', loanAmount: 500000, disbursed: 450000, interestRate: 3.0, specialRate: 5.0, terms: 0, principalPerTerm: 0, interestPerTerm: 15000, date: '2023-09-15', schedule: '', note: '代管案件，每月僅收息', job: '業務', agent: '李四', ownerUid: 'demo' },
@@ -1983,16 +2134,14 @@
                      { id: 'demo4', caseNumber: '#004', displayId: '#004', borrower: '張志豪', status: '0', method: '小額', loanAmount: 20000, disbursed: 20000, interestRate: 0, terms: 1, principalPerTerm: 20000, interestPerTerm: 0, date: '2023-08-01', schedule: '2023-08-05 本金:20000 利息:0', note: '已結清', job: '司機', agent: '趙六', ownerUid: 'demo' },
                      { id: 'demo5', caseNumber: '#005', displayId: '#005', borrower: '林小美', status: '5', method: '叨簿子', loanAmount: 150000, disbursed: 135000, interestRate: 0, terms: 0, principalPerTerm: 0, interestPerTerm: 0, negotiationPrincipal: 5000, date: '2023-11-15', schedule: '2023-12-15 本金:5000 利息:0\n2024-01-15 本金:6000 利息:0', note: '協商還款中，每月還5千本金', job: '服務業', agent: '錢七', ownerUid: 'demo' }
                 ];
+            } else {
+                // 過濾掉非 demo 資料
+                state.records = state.records.filter(r => r.ownerUid === 'demo');
             }
             
-            updateState({ 
-                isDemoMode: true, 
-                currentUser: 'Guest', 
-                allowedStatus: ['0', '1', '3', '4', '5'],
-                isAdmin: false,
-                activeCasesFilter: true
-            }); 
+            renderApp();
         };
+        
         window.openModalList = (type) => updateState({ modalType: type });
 
         // =======================================================
@@ -2001,7 +2150,11 @@
         
         window.exportToExcel = () => {
             let sourceRecords = state.records;
-            if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
+            
+            // 修正：在 demo 模式下，只顯示 demo 資料
+            if (state.isDemoMode) {
+                sourceRecords = state.records.filter(r => r.ownerUid === 'demo');
+            } else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
                 sourceRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
             } else if (!state.isAdmin && !state.isDemoMode) {
                 sourceRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
@@ -2450,7 +2603,11 @@
         // 生成手機版卡片HTML
         const generateMobileCardsHtml = () => {
             let sourceRecords = state.records;
-            if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
+            
+            // 修正：在 demo 模式下，只顯示 demo 資料
+            if (state.isDemoMode) {
+                sourceRecords = state.records.filter(r => r.ownerUid === 'demo');
+            } else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
                 sourceRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
             } else if (!state.isAdmin && !state.isDemoMode) {
                 sourceRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
@@ -2482,8 +2639,19 @@
                 });
             }
             
+            // 狀態篩選
+            if (state.statusFilter === 'bad_debt') {
+                filtered = filtered.filter(r => r.status === '3' || r.status === '4');
+            } else if (state.statusFilter === 'managed') {
+                filtered = filtered.filter(r => r.status === '2');
+            } else if (state.statusFilter === 'closed') {
+                filtered = filtered.filter(r => r.status === '0');
+            } else if (state.statusFilter === 'negotiation') {
+                filtered = filtered.filter(r => r.status === '5');
+            }
+            
             // 篩選狀態1、2、3和5的案件
-            if (state.activeCasesFilter) {
+            if (state.activeCasesFilter && !state.statusFilter) {
                 filtered = filtered.filter(r => r.status === '1' || r.status === '2' || r.status === '3' || r.status === '5');
             }
             
@@ -2664,7 +2832,11 @@
 
             if (tbody) {
                 let sourceRecords = state.records;
-                if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
+                
+                // 修正：在 demo 模式下，只顯示 demo 資料
+                if (state.isDemoMode) {
+                    sourceRecords = state.records.filter(r => r.ownerUid === 'demo');
+                } else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
                     sourceRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
                 } else if (!state.isAdmin && !state.isDemoMode) {
                     sourceRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
@@ -2696,8 +2868,19 @@
                     });
                 }
                 
+                // 狀態篩選
+                if (state.statusFilter === 'bad_debt') {
+                    filtered = filtered.filter(r => r.status === '3' || r.status === '4');
+                } else if (state.statusFilter === 'managed') {
+                    filtered = filtered.filter(r => r.status === '2');
+                } else if (state.statusFilter === 'closed') {
+                    filtered = filtered.filter(r => r.status === '0');
+                } else if (state.statusFilter === 'negotiation') {
+                    filtered = filtered.filter(r => r.status === '5');
+                }
+                
                 // 篩選狀態1、2、3和5的案件
-                if (state.activeCasesFilter) {
+                if (state.activeCasesFilter && !state.statusFilter) {
                     filtered = filtered.filter(r => r.status === '1' || r.status === '2' || r.status === '3' || r.status === '5');
                 }
                 
@@ -2829,7 +3012,11 @@
 
             if (paginationInfo && btnPrev && btnNext && btnFirst && btnLast && pageInput) {
                 let sourceRecords = state.records;
-                if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
+                
+                // 修正：在 demo 模式下，只顯示 demo 資料
+                if (state.isDemoMode) {
+                    sourceRecords = state.records.filter(r => r.ownerUid === 'demo');
+                } else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
                     sourceRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
                 } else if (!state.isAdmin && !state.isDemoMode) {
                     sourceRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
@@ -2861,8 +3048,19 @@
                     });
                 }
                 
+                // 狀態篩選
+                if (state.statusFilter === 'bad_debt') {
+                    filtered = filtered.filter(r => r.status === '3' || r.status === '4');
+                } else if (state.statusFilter === 'managed') {
+                    filtered = filtered.filter(r => r.status === '2');
+                } else if (state.statusFilter === 'closed') {
+                    filtered = filtered.filter(r => r.status === '0');
+                } else if (state.statusFilter === 'negotiation') {
+                    filtered = filtered.filter(r => r.status === '5');
+                }
+                
                 // 篩選狀態1、2、3和5的案件
-                if (state.activeCasesFilter) {
+                if (state.activeCasesFilter && !state.statusFilter) {
                     filtered = filtered.filter(r => r.status === '1' || r.status === '2' || r.status === '3' || r.status === '5');
                 }
                 
@@ -2988,11 +3186,16 @@
             return `<div class="animate-fade-in space-y-6">
                 <header class="flex justify-between items-center mb-6">
                     <div>
-                        <h2 class="text-2xl font-bold text-gray-800">財務營運儀表板</h2>
+                        <div class="flex items-center">
+                            <button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁">
+                                <i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i>
+                            </button>
+                            <h2 class="text-2xl font-bold text-gray-800">財務營運儀表板</h2>
+                        </div>
                         <p class="text-sm text-gray-500 mt-1">債權總額: 狀態1+3+5欠款總和 | 目前放款額: 狀態1+3+5借款金額總和</p>
                     </div>
                     <div class="flex items-center space-x-2">
-                        ${state.isAdmin ? `
+                        ${state.isAdmin && !state.isDemoMode ? `
                         <div class="flex items-center space-x-2 bg-white p-1 rounded-lg border border-gray-200 shadow-sm">
                             <span class="text-xs font-bold text-gray-500 px-2">檢視對象:</span>
                             <select onchange="window.updateState({viewingUid: this.value})" class="text-sm border-none bg-transparent outline-none font-bold text-blue-600">
@@ -3105,7 +3308,12 @@
             return `
             <div class="flex flex-col h-[calc(100vh-6rem)] animate-fade-in space-y-4">
                 <header class="flex flex-col sm:flex-row justify-between items-center gap-4 shrink-0 bg-slate-100 pt-2 pb-2 z-10">
-                    <h2 class="text-2xl font-bold text-gray-800">案件資料列表</h2>
+                    <div class="flex items-center">
+                        <button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁">
+                            <i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i>
+                        </button>
+                        <h2 class="text-2xl font-bold text-gray-800">案件資料列表</h2>
+                    </div>
                     <div class="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2 items-center w-full sm:w-auto">
                         <div class="flex space-x-2 w-full sm:w-auto">
                             <button onclick="window.filterUnpaidCases('all_unpaid')" class="bg-red-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-red-700 flex items-center shadow-sm ${state.unpaidFilter === 'all_unpaid' ? 'ring-2 ring-red-300' : ''}">
@@ -3117,7 +3325,7 @@
                             <button onclick="window.showActiveCases()" class="bg-blue-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-blue-700 flex items-center shadow-sm ${state.activeCasesFilter ? 'ring-2 ring-blue-300' : ''}">
                                 <i data-lucide="list-checks" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">所有未結案</span>
                             </button>
-                            <button onclick="window.showAllCases()" class="bg-gray-500 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-gray-600 flex items-center shadow-sm ${!state.unpaidFilter && !state.activeCasesFilter ? 'ring-2 ring-gray-300' : ''}">
+                            <button onclick="window.showAllCases()" class="bg-gray-500 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-gray-600 flex items-center shadow-sm ${!state.unpaidFilter && !state.activeCasesFilter && !state.statusFilter ? 'ring-2 ring-gray-300' : ''}">
                                 <i data-lucide="database" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">全部案件</span>
                             </button>
                         </div>
@@ -3126,6 +3334,18 @@
                             <div class="relative flex-1 sm:w-64">
                                 <i data-lucide="search" class="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4"></i>
                                 <input type="text" id="searchInput" placeholder="搜尋編號、姓名、方式..." value="${state.searchTerm}" class="w-full pl-10 pr-4 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" oninput="window.handleSearch(this.value)">
+                            </div>
+                            
+                            <!-- 修改：狀態篩選下拉選單，只有在有權限使用狀態2時才顯示「所有代管 (狀態2)」選項 -->
+                            <div class="relative">
+                                <select onchange="window.filterByStatus(this.value)" class="appearance-none w-full sm:w-40 bg-white border border-gray-300 rounded-lg py-2 pl-3 pr-8 text-sm focus:ring-2 focus:ring-emerald-500 outline-none">
+                                    <option value="" ${!state.statusFilter ? 'selected' : ''}>狀態篩選...</option>
+                                    <option value="bad_debt" ${state.statusFilter === 'bad_debt' ? 'selected' : ''}>所有呆帳 (狀態3+4)</option>
+                                    ${state.allowedStatus.includes('2') ? `<option value="managed" ${state.statusFilter === 'managed' ? 'selected' : ''}>所有代管 (狀態2)</option>` : ''}
+                                    <option value="closed" ${state.statusFilter === 'closed' ? 'selected' : ''}>所有結清 (狀態0)</option>
+                                    <option value="negotiation" ${state.statusFilter === 'negotiation' ? 'selected' : ''}>所有協商 (狀態5)</option>
+                                </select>
+                                <i data-lucide="chevron-down" class="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none"></i>
                             </div>
                             
                             <input type="file" id="csvFileInput" accept=".csv" class="hidden" onchange="window.handleFileChange(event)" />
@@ -3173,6 +3393,14 @@
                                 `<span class="font-bold text-red-600"><i data-lucide="alert-circle" class="w-3 h-3 inline mr-1"></i>所有未繳案件</span>` : 
                               state.unpaidFilter === 'current_unpaid' ? 
                                 `<span class="font-bold text-amber-600"><i data-lucide="alert-triangle" class="w-3 h-3 inline mr-1"></i>逾期未繳案件</span>` : 
+                              state.statusFilter === 'bad_debt' ?
+                                `<span class="font-bold text-red-600"><i data-lucide="alert-octagon" class="w-3 h-3 inline mr-1"></i>所有呆帳 (狀態3+4)</span>` :
+                              state.statusFilter === 'managed' ?
+                                `<span class="font-bold text-blue-600"><i data-lucide="briefcase" class="w-3 h-3 inline mr-1"></i>所有代管 (狀態2)</span>` :
+                              state.statusFilter === 'closed' ?
+                                `<span class="font-bold text-gray-600"><i data-lucide="check-circle" class="w-3 h-3 inline mr-1"></i>所有結清 (狀態0)</span>` :
+                              state.statusFilter === 'negotiation' ?
+                                `<span class="font-bold text-purple-600"><i data-lucide="handshake" class="w-3 h-3 inline mr-1"></i>所有協商 (狀態5)</span>` :
                               state.activeCasesFilter ?
                                 `<span class="font-bold text-blue-600"><i data-lucide="list-checks" class="w-3 h-3 inline mr-1"></i>所有未結案 (狀態1+2+3+5)</span>` :
                               '全部案件'}
@@ -3205,9 +3433,14 @@
 
         function renderUserManagement() {
              return `<div class="max-w-6xl mx-auto animate-fade-in">
-                <header class="mb-6">
-                    <h2 class="text-2xl font-bold text-gray-800">用戶權限管理</h2>
-                    <p class="text-sm text-gray-500">僅管理員可見，設定誰可以使用「代管」功能，並管理用戶帳號。</p>
+                <header class="mb-6 flex items-center">
+                    <button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁">
+                        <i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i>
+                    </button>
+                    <div>
+                        <h2 class="text-2xl font-bold text-gray-800">用戶權限管理</h2>
+                        <p class="text-sm text-gray-500">僅管理員可見，設定誰可以使用「代管」功能，並管理用戶帳號。</p>
+                    </div>
                 </header>
                 
                 <div class="mb-4 flex justify-end space-x-2">
@@ -3280,7 +3513,15 @@
              
              const canUseStatus2 = state.allowedStatus.includes('2');
              
-             return `<div class="max-w-5xl mx-auto bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden animate-fade-in flex flex-col h-[calc(100vh-6rem)]"><div class="px-4 py-3 border-b border-gray-200 flex justify-between items-center bg-gray-50 shrink-0"><h3 class="font-bold text-gray-800 flex items-center"><i data-lucide="${isEdit ? 'edit-2' : 'plus'}" class="w-4 h-4 mr-2"></i> ${isEdit ? '編輯案件' : '新增案件'}</h3><button onclick="window.setActiveTab('list')" class="text-gray-400 hover:text-gray-600"><i data-lucide="x" class="w-5 h-5"></i></button></div>
+             return `<div class="max-w-5xl mx-auto bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden animate-fade-in flex flex-col h-[calc(100vh-6rem)]"><div class="px-4 py-3 border-b border-gray-200 flex justify-between items-center bg-gray-50 shrink-0">
+                 <div class="flex items-center">
+                     <button onclick="window.goBack()" class="mr-3 p-1 rounded hover:bg-gray-200 transition-colors" title="回到上一頁">
+                         <i data-lucide="arrow-left" class="w-4 h-4 text-gray-600"></i>
+                     </button>
+                     <h3 class="font-bold text-gray-800 flex items-center"><i data-lucide="${isEdit ? 'edit-2' : 'plus'}" class="w-4 h-4 mr-2"></i> ${isEdit ? '編輯案件' : '新增案件'}</h3>
+                 </div>
+                 <button onclick="window.setActiveTab('list')" class="text-gray-400 hover:text-gray-600"><i data-lucide="x" class="w-5 h-5"></i></button>
+             </div>
              <div class="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-sm flex-1 overflow-y-auto custom-scrollbar">
                  <div class="lg:col-span-4 bg-gray-50 p-3 rounded-lg border border-gray-200"><h4 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 border-b border-gray-200 pb-1">基本與聯絡資料</h4><div class="grid grid-cols-2 md:grid-cols-4 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">借款人</label><input type="text" id="input_borrower" value="${formData.borrower}" oninput="window.updateFormData('borrower', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">身分證字號</label><input type="text" id="input_idNumber" value="${formData.idNumber}" oninput="window.updateFormData('idNumber', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">工作</label><input type="text" id="input_job" value="${formData.job}" oninput="window.updateFormData('job', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">經辦人</label><input type="text" id="input_agent" value="${formData.agent}" oninput="window.updateFormData('agent', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div class="md:col-span-2"><label class="block text-[10px] text-gray-500 mb-0.5">住址</label><input type="text" id="input_address" value="${formData.address}" oninput="window.updateFormData('address', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">電話</label><input type="text" id="input_telephone" value="${formData.telephone}" oninput="window.updateFormData('telephone', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">手機</label><input type="text" id="input_mobile" value="${formData.mobile}" oninput="window.updateFormData('mobile', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div></div></div>
                  <div class="lg:col-span-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3"><div class="lg:col-span-2 bg-blue-50 p-3 rounded-lg border border-blue-100"><h4 class="text-xs font-bold text-blue-800 uppercase tracking-wider mb-2 border-b border-blue-200 pb-1">貸款設定</h4><div class="grid grid-cols-2 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">狀態</label><select onchange="window.updateFormData('status', this.value, true)" class="w-full py-1 px-2 border rounded outline-none bg-white text-sm">
@@ -3332,8 +3573,13 @@
                              <span id="display_negotiation" class="font-mono font-bold text-purple-600">${formatNumber(formData.negotiationPrincipal || 0)}</span>
                          </div>
                          ` : ''}
-                         <div class="${formData.status === '5' ? 'col-span-1' : 'col-span-2'} flex justify-end">
-                             <button onclick="window.handleDelete('${state.editingRecord.id}')" class="px-3 py-1 bg-red-100 text-red-600 rounded hover:bg-red-200 text-xs font-bold flex items-center"><i data-lucide="trash-2" class="w-3 h-3 mr-1"></i>刪除案件</button>
+                         <div class="${formData.status === '5' ? 'col-span-1' : 'col-span-2'} flex justify-end space-x-2">
+                             <button onclick="window.duplicateCase()" class="px-3 py-1 bg-blue-100 text-blue-600 rounded hover:bg-blue-200 text-xs font-bold flex items-center">
+                                 <i data-lucide="copy" class="w-3 h-3 mr-1"></i>複製案件
+                             </button>
+                             <button onclick="window.handleDelete('${state.editingRecord.id}')" class="px-3 py-1 bg-red-100 text-red-600 rounded hover:bg-red-200 text-xs font-bold flex items-center">
+                                 <i data-lucide="trash-2" class="w-3 h-3 mr-1"></i>刪除案件
+                             </button>
                          </div>
                      </div>` : ''}
              </div>
@@ -3352,20 +3598,90 @@
                 return false;
             });
             
+            // 在 demo 模式下，只顯示 demo 資料
+            if (state.isDemoMode) {
+                repaymentCases = repaymentCases.filter(r => r.ownerUid === 'demo');
+            }
+            
             const isSearching = !!state.repaymentSearchTerm; 
             const dropdownDisplayClass = isSearching ? '' : 'hidden'; 
             const dropdownHtml = `<div id="repaymentDropdownContainer" class="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-xl max-h-60 overflow-y-auto ${dropdownDisplayClass}"></div>`; 
             const selectedCase = state.selectedRepaymentId ? state.records.find(r => r.id === state.selectedRepaymentId) : null; 
             
-            return `<div class="max-w-2xl mx-auto bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden animate-fade-in mt-8"><div class="bg-gradient-to-r from-blue-600 to-indigo-700 p-6 text-white flex justify-between items-center"><div><h2 class="text-xl font-bold flex items-center"><i data-lucide="banknote" class="w-6 h-6 mr-2"></i> 還款入帳作業</h2><p class="text-blue-100 text-sm mt-1">選取案件連結後，輸入每期還款資訊</p></div><button onclick="window.setActiveTab('list')" class="px-4 py-2 bg-white/20 text-white rounded-lg hover:bg-white/30 transition-colors flex items-center text-sm font-medium"><i data-lucide="chevron-left" class="w-4 h-4 mr-1"></i>回上一頁</button></div><div class="p-8 space-y-6"><div class="space-y-2 relative"><label class="text-sm font-bold text-gray-600 flex items-center"><i data-lucide="search" class="w-4 h-4 mr-1"></i> 選擇案件 (僅顯示進行中${state.allowedStatus.includes('2') ? '/代管' : ''}/協商)</label><div class="relative"><input type="text" placeholder="輸入編號或姓名搜尋..." value="${state.repaymentSearchTerm}" oninput="window.updateRepaymentSearch(this.value)" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none pl-10"/><i data-lucide="search" class="absolute left-3 top-3.5 text-gray-400 w-4 h-4"></i></div>${dropdownHtml}<select id="repaymentSelect" onchange="window.handleRepaymentSelect(this.value)" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white mt-2" ${isSearching ? 'hidden' : ''}><option value="">-- 請選擇案件 --</option>${repaymentCases.map(r => { 
-                let amount = 0;
-                if (r.status === '5') {
-                    amount = Number(r.negotiationPrincipal) || 0;
-                } else {
-                    amount = (Number(r.principalPerTerm)||0) + (Number(r.interestPerTerm)||0);
-                }
-                return `<option value="${r.id}" ${state.selectedRepaymentId === r.id ? 'selected' : ''}>${r.displayId || r.caseNumber || ''} - ${r.borrower || ''} (每期應繳: $${formatNumber(amount)})</option>`;
-            }).join('')}</select>${selectedCase ? `<div class="mt-2 flex justify-between items-center bg-blue-50 p-3 rounded-lg border border-blue-100"><span class="text-sm text-blue-800 font-medium">當前連結案件：${selectedCase.displayId || selectedCase.caseNumber || ''} ${selectedCase.borrower}</span><button onclick="window.resetRepaymentSelection()" class="text-xs text-blue-500 hover:text-blue-700 underline">重新選擇</button></div>` : ''}</div><div class="bg-gray-50 rounded-xl p-6 border border-gray-200 space-y-4"><div class="flex justify-between items-center border-b border-gray-200 pb-2 mb-4"><h3 class="font-bold text-gray-700 flex items-center"><i data-lucide="edit-2" class="w-4 h-4 mr-2"></i> 入帳資訊</h3>${selectedCase ? `<span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-bold flex items-center"><i data-lucide="check" class="w-3 h-3 mr-1"></i> 已連結</span>` : `<span class="bg-amber-100 text-amber-700 px-3 py-1 rounded-full text-xs font-bold flex items-center"><i data-lucide="link" class="w-3 h-3 mr-1"></i> 未連結案件</span>`}</div><div class="grid grid-cols-1 md:grid-cols-2 gap-4"><div><label class="block text-xs font-bold text-gray-500 mb-1">還款日期 (入帳日)</label><input type="date" value="${state.repaymentDate}" oninput="window.updateRepaymentInput('repaymentDate', this.value)" class="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none bg-white"/></div><div class="hidden md:block"></div><div><label class="block text-xs font-bold text-gray-500 mb-1">還款本金</label><div class="relative"><span class="absolute left-3 top-2.5 text-gray-400">$</span><input type="number" value="${state.repaymentPrincipal}" oninput="window.updateRepaymentInput('repaymentPrincipal', this.value)" placeholder="0" class="w-full p-2 pl-7 border rounded focus:ring-2 focus:ring-blue-500 outline-none font-mono text-lg bg-white" ${selectedCase?.status === '2' ? 'disabled bg-gray-200' : ''}/></div></div><div><label class="block text-xs font-bold text-gray-500 mb-1">還款利息</label><div class="relative"><span class="absolute left-3 top-2.5 text-gray-400">$</span><input type="number" value="${state.repaymentInterest}" oninput="window.updateRepaymentInput('repaymentInterest', this.value)" placeholder="0" class="w-full p-2 pl-7 border rounded focus:ring-2 focus:ring-blue-500 outline-none font-mono text-lg bg-white" ${selectedCase?.status === '5' ? 'disabled bg-gray-200' : ''}/></div></div></div></div><div class="pt-4 flex justify-end border-t border-gray-100 mt-6"><button onclick="window.submitRepayment()" ${!selectedCase ? 'disabled' : ''} class="px-6 py-3 rounded-lg shadow-md flex items-center font-bold text-lg transition-all ${selectedCase ? 'bg-blue-600 text-white hover:bg-blue-700 transform active:scale-95' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}"><i data-lucide="save" class="w-5 h-5 mr-2"></i> 確認入帳</button></div></div></div>`; 
+            return `<div class="max-w-2xl mx-auto bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden animate-fade-in mt-8">
+                <div class="bg-gradient-to-r from-blue-600 to-indigo-700 p-6 text-white flex justify-between items-center">
+                    <div class="flex items-center">
+                        <button onclick="window.goBack()" class="mr-3 p-1 rounded hover:bg-white/20 transition-colors" title="回到上一頁">
+                            <i data-lucide="arrow-left" class="w-4 h-4 text-white"></i>
+                        </button>
+                        <div>
+                            <h2 class="text-xl font-bold flex items-center"><i data-lucide="banknote" class="w-6 h-6 mr-2"></i> 還款入帳作業</h2>
+                            <p class="text-blue-100 text-sm mt-1">選取案件連結後，輸入每期還款資訊</p>
+                        </div>
+                    </div>
+                    <button onclick="window.setActiveTab('list')" class="px-4 py-2 bg-white/20 text-white rounded-lg hover:bg-white/30 transition-colors flex items-center text-sm font-medium"><i data-lucide="chevron-left" class="w-4 h-4 mr-1"></i>回上一頁</button>
+                </div>
+                <div class="p-8 space-y-6">
+                    <div class="space-y-2 relative">
+                        <label class="text-sm font-bold text-gray-600 flex items-center"><i data-lucide="search" class="w-4 h-4 mr-1"></i> 選擇案件 (僅顯示進行中${state.allowedStatus.includes('2') ? '/代管' : ''}/協商)</label>
+                        <div class="relative">
+                            <input type="text" placeholder="輸入編號或姓名搜尋..." value="${state.repaymentSearchTerm}" oninput="window.updateRepaymentSearch(this.value)" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none pl-10"/>
+                            <i data-lucide="search" class="absolute left-3 top-3.5 text-gray-400 w-4 h-4"></i>
+                        </div>
+                        ${dropdownHtml}
+                        <select id="repaymentSelect" onchange="window.handleRepaymentSelect(this.value)" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white mt-2" ${isSearching ? 'hidden' : ''}>
+                            <option value="">-- 請選擇案件 --</option>
+                            ${repaymentCases.map(r => { 
+                                let amount = 0;
+                                if (r.status === '5') {
+                                    amount = Number(r.negotiationPrincipal) || 0;
+                                } else {
+                                    amount = (Number(r.currentPrincipal)||Number(r.principalPerTerm)||0) + (Number(r.currentInterest)||Number(r.interestPerTerm)||0);
+                                }
+                                return `<option value="${r.id}" ${state.selectedRepaymentId === r.id ? 'selected' : ''}>${r.displayId || r.caseNumber || ''} - ${r.borrower || ''} (每期應繳: $${formatNumber(amount)})</option>`;
+                            }).join('')}
+                        </select>
+                        ${selectedCase ? `
+                            <div class="mt-2 flex justify-between items-center bg-blue-50 p-3 rounded-lg border border-blue-100">
+                                <span class="text-sm text-blue-800 font-medium">當前連結案件：${selectedCase.displayId || selectedCase.caseNumber || ''} ${selectedCase.borrower}</span>
+                                <button onclick="window.resetRepaymentSelection()" class="text-xs text-blue-500 hover:text-blue-700 underline">重新選擇</button>
+                            </div>
+                        ` : ''}
+                    </div>
+                    <div class="bg-gray-50 rounded-xl p-6 border border-gray-200 space-y-4">
+                        <div class="flex justify-between items-center border-b border-gray-200 pb-2 mb-4">
+                            <h3 class="font-bold text-gray-700 flex items-center"><i data-lucide="edit-2" class="w-4 h-4 mr-2"></i> 入帳資訊</h3>
+                            ${selectedCase ? `<span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-bold flex items-center"><i data-lucide="check" class="w-3 h-3 mr-1"></i> 已連結</span>` : `<span class="bg-amber-100 text-amber-700 px-3 py-1 rounded-full text-xs font-bold flex items-center"><i data-lucide="link" class="w-3 h-3 mr-1"></i> 未連結案件</span>`}
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-xs font-bold text-gray-500 mb-1">還款日期 (入帳日)</label>
+                                <input type="date" value="${state.repaymentDate}" oninput="window.updateRepaymentInput('repaymentDate', this.value)" class="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none bg-white"/>
+                            </div>
+                            <div class="hidden md:block"></div>
+                            <div>
+                                <label class="block text-xs font-bold text-gray-500 mb-1">還款本金</label>
+                                <div class="relative">
+                                    <span class="absolute left-3 top-2.5 text-gray-400">$</span>
+                                    <input type="number" value="${state.repaymentPrincipal}" oninput="window.updateRepaymentInput('repaymentPrincipal', this.value)" placeholder="0" class="w-full p-2 pl-7 border rounded focus:ring-2 focus:ring-blue-500 outline-none font-mono text-lg bg-white" ${selectedCase?.status === '2' ? 'disabled bg-gray-200' : ''}/>
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold text-gray-500 mb-1">還款利息</label>
+                                <div class="relative">
+                                    <span class="absolute left-3 top-2.5 text-gray-400">$</span>
+                                    <input type="number" value="${state.repaymentInterest}" oninput="window.updateRepaymentInput('repaymentInterest', this.value)" placeholder="0" class="w-full p-2 pl-7 border rounded focus:ring-2 focus:ring-blue-500 outline-none font-mono text-lg bg-white" ${selectedCase?.status === '5' ? 'disabled bg-gray-200' : ''}/>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="pt-4 flex justify-end border-t border-gray-100 mt-6">
+                        <button onclick="window.submitRepayment()" ${!selectedCase ? 'disabled' : ''} class="px-6 py-3 rounded-lg shadow-md flex items-center font-bold text-lg transition-all ${selectedCase ? 'bg-blue-600 text-white hover:bg-blue-700 transform active:scale-95' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}">
+                            <i data-lucide="save" class="w-5 h-5 mr-2"></i> 確認入帳
+                        </button>
+                    </div>
+                </div>
+            </div>`; 
         }
 
         function renderApp() { 
@@ -3379,7 +3695,7 @@
                 else if (state.activeTab === 'list') content = renderList();
                 else if (state.activeTab === 'form') content = renderForm();
                 else if (state.activeTab === 'repayment') content = renderRepayment();
-                else if (state.activeTab === 'admin') content = renderUserManagement();
+                else if (state.activeTab === 'admin' && state.isAdmin && !state.isDemoMode) content = renderUserManagement();
 
                 let modalHtml = '';
                 
@@ -3399,7 +3715,11 @@
                     else if (state.modalType === 'negotiation') filteredRecs = currentStats.negotiationRecords;
                     else {
                         let baseRecords = state.records;
-                        if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
+                        
+                        // 修正：在 demo 模式下，只顯示 demo 資料
+                        if (state.isDemoMode) {
+                            baseRecords = state.records.filter(r => r.ownerUid === 'demo');
+                        } else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
                             baseRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
                         } else if (!state.isAdmin && !state.isDemoMode) {
                             baseRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
@@ -3630,7 +3950,7 @@
                     modalHtml += `<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 animate-fade-in backdrop-blur-sm"><div class="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col"><div class="p-4 flex justify-between items-center text-white shrink-0 bg-gradient-to-r from-blue-600 to-indigo-600"><h3 class="font-bold flex items-center"><i data-lucide="list" class="w-5 h-5 mr-2"></i> 案件列表</h3><button onclick="window.updateState({modalType: null})" class="hover:bg-white/20 p-1 rounded"><i data-lucide="x" class="w-5 h-5"></i></button></div><div class="p-0 overflow-y-auto flex-1"><table class="w-full text-left border-collapse"><thead class="bg-gray-50 text-gray-500 text-xs uppercase sticky top-0">${customHeaders}</thead><tbody class="divide-y divide-gray-100 text-sm">${filteredWithDisplayIds.map(r => { const calc = calculateDerivedData(r); const status = getStatusLabel(r.status); return customRowBuilder(r, calc, status); }).join('')}</tbody></table></div></div></div>`;
                 }
 
-                app.innerHTML = `<div class="flex h-screen bg-slate-100 font-sans text-gray-800"><div class="w-20 sm:w-64 bg-slate-900 text-white flex flex-col justify-between fixed h-full z-20 transition-all duration-300"><div><div class="p-6 flex items-center justify-center sm:justify-start border-b border-slate-700"><i data-lucide="wallet" class="w-8 h-8 text-emerald-400 mr-0 sm:mr-3"></i><span class="hidden sm:block text-xl font-bold tracking-wider">借貸管理</span></div><div class="px-6 py-4 flex items-center border-b border-slate-800 mb-2"><div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold mr-3 ${state.isDemoMode ? 'bg-amber-500' : 'bg-slate-700'}">${state.isDemoMode ? 'T' : (state.currentUser ? state.currentUser.substring(0, 2).toUpperCase() : 'U')}</div><div class="hidden sm:block"><p class="text-xs text-slate-400">${state.isDemoMode ? "試用模式" : "已登入"}</p><p class="text-sm font-bold text-white truncate w-32">${state.isDemoMode ? "訪客 (不儲存)" : state.currentUser}</p></div></div><nav class="mt-4 px-4 space-y-2"><button onclick="window.setActiveTab('dashboard')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab === 'dashboard' ? 'bg-emerald-600' : 'hover:bg-slate-800'}"><i data-lucide="layout-dashboard" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">營運報表</span></button><button onclick="window.setActiveTab('list')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab === 'list' ? 'bg-emerald-600' : 'hover:bg-slate-800'}"><i data-lucide="database" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">案件列表</span></button><button onclick="window.setActiveTab('repayment')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab === 'repayment' ? 'bg-emerald-600' : 'hover:bg-slate-800'}"><i data-lucide="banknote" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">還款輸入</span></button>${state.isAdmin ? `<button onclick="window.setActiveTab('admin')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab === 'admin' ? 'bg-emerald-600' : 'hover:bg-slate-800'}"><i data-lucide="users" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">用戶管理</span></button>` : ''}</nav></div><div class="p-4 border-t border-slate-700 space-y-2"><button onclick="window.handleLogout()" class="w-full flex items-center justify-center sm:justify-start p-3 rounded-lg text-slate-400 hover:bg-red-900/30 hover:text-red-400 transition-colors"><i data-lucide="log-out" class="w-5 h-5 mr-0 sm:mr-2"></i><span class="hidden sm:block font-medium">登出系統</span></button></div></div><div class="flex-1 ml-20 sm:ml-64 p-4 sm:p-8 overflow-x-hidden">${content}</div>${modalHtml}</div>`;
+                app.innerHTML = `<div class="flex h-screen bg-slate-100 font-sans text-gray-800"><div class="w-20 sm:w-64 bg-slate-900 text-white flex flex-col justify-between fixed h-full z-20 transition-all duration-300"><div><div class="p-6 flex items-center justify-center sm:justify-start border-b border-slate-700"><i data-lucide="wallet" class="w-8 h-8 text-emerald-400 mr-0 sm:mr-3"></i><span class="hidden sm:block text-xl font-bold tracking-wider">借貸管理</span></div><div class="px-6 py-4 flex items-center border-b border-slate-800 mb-2"><div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold mr-3 ${state.isDemoMode ? 'bg-amber-500' : 'bg-slate-700'}">${state.isDemoMode ? 'T' : (state.currentUser ? state.currentUser.substring(0, 2).toUpperCase() : 'U')}</div><div class="hidden sm:block"><p class="text-xs text-slate-400">${state.isDemoMode ? "試用模式" : "已登入"}</p><p class="text-sm font-bold text-white truncate w-32">${state.isDemoMode ? "訪客 (不儲存)" : state.currentUser}</p></div></div><nav class="mt-4 px-4 space-y-2"><button onclick="window.setActiveTab('dashboard')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab === 'dashboard' ? 'bg-emerald-600' : 'hover:bg-slate-800'}"><i data-lucide="layout-dashboard" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">營運報表</span></button><button onclick="window.setActiveTab('list')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab === 'list' ? 'bg-emerald-600' : 'hover:bg-slate-800'}"><i data-lucide="database" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">案件列表</span></button><button onclick="window.setActiveTab('repayment')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab === 'repayment' ? 'bg-emerald-600' : 'hover:bg-slate-800'}"><i data-lucide="banknote" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">還款輸入</span></button>${state.isAdmin && !state.isDemoMode ? `<button onclick="window.setActiveTab('admin')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab === 'admin' ? 'bg-emerald-600' : 'hover:bg-slate-800'}"><i data-lucide="users" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">用戶管理</span></button>` : ''}</nav></div><div class="p-4 border-t border-slate-700 space-y-2"><button onclick="window.handleLogout()" class="w-full flex items-center justify-center sm:justify-start p-3 rounded-lg text-slate-400 hover:bg-red-900/30 hover:text-red-400 transition-colors"><i data-lucide="log-out" class="w-5 h-5 mr-0 sm:mr-2"></i><span class="hidden sm:block font-medium">登出系統</span></button></div></div><div class="flex-1 ml-20 sm:ml-64 p-4 sm:p-8 overflow-x-hidden">${content}</div>${modalHtml}</div>`;
                 
                 if (state.activeTab === 'list') {
                     window.refreshListUI();
@@ -3640,12 +3960,19 @@
         }
 
         // Init App
-        if (firebaseAvailable) {
+        if (firebaseAvailable && !state.isDemoMode) {
             onAuthStateChanged(auth, async (user) => {
+                // 如果在 demo 模式，不要執行 Firebase 相關的監聽
+                if (state.isDemoMode || state.demoModeLocked) {
+                    console.log("在 demo 模式，跳過 Firebase 監聽");
+                    return;
+                }
+                
                 if (user) {
                     state.currentUser = user.displayName || user.email;
                     state.currentUserUid = user.uid;
                     state.isDemoMode = false;
+                    state.demoModeLocked = false;
                     
                     if (state.viewingUid === null) {
                         state.viewingUid = user.uid;
@@ -3658,6 +3985,9 @@
                     }
                     
                     onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'user_directory'), async (snap) => {
+                        // 如果在 demo 模式，不要更新用戶目錄
+                        if (state.isDemoMode || state.demoModeLocked) return;
+                        
                         const allUsers = snap.docs.map(d => d.data());
                         state.usersDirectory = allUsers;
                         
@@ -3700,6 +4030,9 @@
                             orderBy('date', 'asc')
                         );
                         onSnapshot(q, (snapshot) => {
+                            // 如果在 demo 模式，不要更新記錄
+                            if (state.isDemoMode || state.demoModeLocked) return;
+                            
                             const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                             
                             // 按日期排序
@@ -3714,52 +4047,58 @@
                         state.isLoadingListener = true;
                     }
                 } else {
-                    updateState({ 
-                        currentUser: null, 
-                        currentUserUid: null,
-                        currentUserName: 'Guest',
-                        isAdmin: false,
-                        allowedStatus: ['0', '1', '3', '4', '5'],
-                        viewingUid: null,
-                        usersDirectory: [],
-                        isDemoMode: false,
-                        isRegistering: false,
-                        authLoading: false,
-                        activeTab: 'dashboard',
-                        records: [],
-                        cardLayout: initialCardLayout,
-                        editingRecord: null,
-                        searchTerm: '',
-                        repaymentSearchTerm: '',
-                        selectedRepaymentId: '',
-                        repaymentDate: new Date().toISOString().split('T')[0],
-                        repaymentPrincipal: '',
-                        repaymentInterest: '',
-                        currentPage: 1,
-                        itemsPerPage: 10,
-                        modalType: null,
-                        showAIModal: false,
-                        activeModal: { type: null, record: null },
-                        tempScheduleLines: [],
-                        isLoadingListener: false,
-                        isImporting: false,
-                        unpaidFilter: null,
-                        batchDeleteMode: false,
-                        selectedCasesForBatch: [],
-                        activeCasesFilter: true,
-                        cardColors: {}
-                    });
-                    
-                    formData = { ...initialFormState };
-                    
-                    if (typeof sessionStorage !== 'undefined') {
-                        sessionStorage.removeItem('firebase:authUser:' + firebaseConfig.apiKey + ':' + appId);
+                    // 只有在不是 demo 模式時才重置狀態
+                    if (!state.isDemoMode && !state.demoModeLocked) {
+                        updateState({ 
+                            currentUser: null, 
+                            currentUserUid: null,
+                            currentUserName: 'Guest',
+                            isAdmin: false,
+                            allowedStatus: ['0', '1', '3', '4', '5'],
+                            viewingUid: null,
+                            usersDirectory: [],
+                            isDemoMode: false,
+                            demoModeLocked: false,
+                            isRegistering: false,
+                            authLoading: false,
+                            activeTab: 'dashboard',
+                            records: [],
+                            cardLayout: initialCardLayout,
+                            editingRecord: null,
+                            searchTerm: '',
+                            repaymentSearchTerm: '',
+                            selectedRepaymentId: '',
+                            repaymentDate: new Date().toISOString().split('T')[0],
+                            repaymentPrincipal: '',
+                            repaymentInterest: '',
+                            currentPage: 1,
+                            itemsPerPage: 10,
+                            modalType: null,
+                            showAIModal: false,
+                            activeModal: { type: null, record: null },
+                            tempScheduleLines: [],
+                            isLoadingListener: false,
+                            isImporting: false,
+                            unpaidFilter: null,
+                            batchDeleteMode: false,
+                            selectedCasesForBatch: [],
+                            activeCasesFilter: true,
+                            cardColors: {},
+                            history: ['dashboard'],
+                            statusFilter: null
+                        });
+                        
+                        formData = { ...initialFormState };
+                        
+                        if (typeof sessionStorage !== 'undefined') {
+                            sessionStorage.removeItem('firebase:authUser:' + firebaseConfig.apiKey + ':' + appId);
+                        }
+                        
+                        setTimeout(() => {
+                            const searchInput = document.getElementById('searchInput');
+                            if (searchInput) searchInput.value = '';
+                        }, 0);
                     }
-                    
-                    setTimeout(() => {
-                        const searchInput = document.getElementById('searchInput');
-                        if (searchInput) searchInput.value = '';
-                    }, 0);
                     
                     renderApp();
                 }
