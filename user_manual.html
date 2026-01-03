@@ -1,0 +1,1201 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>借貸管理系統 - 使用說明書</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Google Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+    
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #f1f1f1; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 3px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #a8a8a8; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .animate-fade-in { animation: fadeIn 0.3s ease-in-out; }
+        
+        /* 手機版優化 */
+        @media (max-width: 768px) {
+            .mobile-section { padding: 1rem !important; }
+            .mobile-text-lg { font-size: 1.125rem !important; }
+            .mobile-text-base { font-size: 1rem !important; }
+            .mobile-text-sm { font-size: 0.875rem !important; }
+            .mobile-p-4 { padding: 1rem !important; }
+        }
+        
+        /* 目錄樣式 */
+        .toc-item { 
+            transition: all 0.2s; 
+            border-left: 3px solid transparent;
+        }
+        .toc-item:hover { 
+            background-color: #f3f4f6; 
+            border-left-color: #10b981;
+        }
+        
+        /* 步驟樣式 */
+        .step-number {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 2rem;
+            height: 2rem;
+            background-color: #10b981;
+            color: white;
+            border-radius: 50%;
+            font-weight: bold;
+            margin-right: 1rem;
+            flex-shrink: 0;
+        }
+        
+        /* 卡片樣式 */
+        .info-card {
+            border-left: 4px solid #3b82f6;
+            background-color: #eff6ff;
+        }
+        
+        .warning-card {
+            border-left: 4px solid #f59e0b;
+            background-color: #fffbeb;
+        }
+        
+        .success-card {
+            border-left: 4px solid #10b981;
+            background-color: #ecfdf5;
+        }
+        
+        /* 代碼樣式 */
+        .code-block {
+            font-family: 'Courier New', monospace;
+            background-color: #1f2937;
+            color: #e5e7eb;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            overflow-x: auto;
+        }
+        
+        /* 表格樣式 */
+        .manual-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+        }
+        
+        .manual-table th {
+            background-color: #f3f4f6;
+            padding: 0.75rem;
+            text-align: left;
+            font-weight: 600;
+            border: 1px solid #e5e7eb;
+        }
+        
+        .manual-table td {
+            padding: 0.75rem;
+            border: 1px solid #e5e7eb;
+        }
+        
+        .manual-table tr:nth-child(even) {
+            background-color: #f9fafb;
+        }
+        
+        /* 最重要的修復：純CSS滾動修復 */
+        html {
+            scroll-behavior: smooth !important;
+        }
+        
+        /* 為每個章節創建隱形錨點，用於精確定位 */
+        .section-target {
+            display: block;
+            position: relative;
+            top: -140px; /* 調整這個值來適應你的導航欄高度 */
+            visibility: hidden;
+        }
+        
+        /* 章節本身也需要調整 */
+        section {
+            scroll-margin-top: 120px;
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-gray-800">
+
+    <!-- 系統訊息容器 -->
+    <div id="message-container" class="fixed top-4 right-4 w-full max-w-sm z-[90] pointer-events-none"></div>
+
+    <div class="min-h-screen">
+        <!-- 頂部導航欄 -->
+        <nav class="bg-slate-900 text-white shadow-lg sticky top-0 z-30">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between items-center py-4">
+                    <div class="flex items-center space-x-3">
+                        <div class="w-10 h-10 flex items-center justify-center bg-emerald-500 rounded-lg">
+                            <i data-lucide="book-open" class="w-6 h-6"></i>
+                        </div>
+                        <div>
+                            <h1 class="text-xl font-bold">借貸管理系統</h1>
+                            <p class="text-sm text-slate-300">使用說明書</p>
+                        </div>
+                    </div>
+                    <div class="flex items-center space-x-4">
+                        <button onclick="window.location.href='index.html'" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 rounded-lg flex items-center transition-colors">
+                            <i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>
+                            返回系統
+                        </button>
+                        <button onclick="printManual()" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg flex items-center transition-colors">
+                            <i data-lucide="printer" class="w-4 h-4 mr-2"></i>
+                            列印說明
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <div class="flex flex-col lg:flex-row gap-8">
+                <!-- 左側目錄 -->
+                <div class="lg:w-1/4">
+                    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 sticky top-24">
+                        <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center">
+                            <i data-lucide="list" class="w-5 h-5 mr-2"></i>
+                            目錄
+                        </h2>
+                        <div class="space-y-2">
+                            <a href="#section-1" class="toc-item block p-3 rounded-lg text-gray-700 hover:text-emerald-600">
+                                <div class="flex items-center">
+                                    <i data-lucide="play" class="w-4 h-4 mr-2"></i>
+                                    <span>快速開始</span>
+                                </div>
+                            </a>
+                            <a href="#section-2" class="toc-item block p-3 rounded-lg text-gray-700 hover:text-emerald-600">
+                                <div class="flex items-center">
+                                    <i data-lucide="layout-dashboard" class="w-4 h-4 mr-2"></i>
+                                    <span>儀表板操作</span>
+                                </div>
+                            </a>
+                            <a href="#section-3" class="toc-item block p-3 rounded-lg text-gray-700 hover:text-emerald-600">
+                                <div class="flex items-center">
+                                    <i data-lucide="database" class="w-4 h-4 mr-2"></i>
+                                    <span>案件管理</span>
+                                </div>
+                            </a>
+                            <a href="#section-4" class="toc-item block p-3 rounded-lg text-gray-700 hover:text-emerald-600">
+                                <div class="flex items-center">
+                                    <i data-lucide="banknote" class="w-4 h-4 mr-2"></i>
+                                    <span>還款入帳</span>
+                                </div>
+                            </a>
+                            <a href="#section-5" class="toc-item block p-3 rounded-lg text-gray-700 hover:text-emerald-600">
+                                <div class="flex items-center">
+                                    <i data-lucide="file-text" class="w-4 h-4 mr-2"></i>
+                                    <span>資料匯入匯出</span>
+                                </div>
+                            </a>
+                            <a href="#section-6" class="toc-item block p-3 rounded-lg text-gray-700 hover:text-emerald-600">
+                                <div class="flex items-center">
+                                    <i data-lucide="smartphone" class="w-4 h-4 mr-2"></i>
+                                    <span>手機版操作</span>
+                                </div>
+                            </a>
+                            <a href="#section-7" class="toc-item block p-3 rounded-lg text-gray-700 hover:text-emerald-600">
+                                <div class="flex items-center">
+                                    <i data-lucide="help-circle" class="w-4 h-4 mr-2"></i>
+                                    <span>常見問題</span>
+                                </div>
+                            </a>
+                        </div>
+                        
+                        <div class="mt-8 pt-6 border-t border-gray-200">
+                            <h3 class="text-sm font-bold text-gray-600 mb-3">快捷連結</h3>
+                            <div class="space-y-2">
+                                <a href="index.html" class="flex items-center p-2 text-blue-600 hover:text-blue-800">
+                                    <i data-lucide="external-link" class="w-3 h-3 mr-2"></i>
+                                    <span class="text-sm">開啟系統</span>
+                                </a>
+                                <a href="#video-tutorials" class="flex items-center p-2 text-blue-600 hover:text-blue-800">
+                                    <i data-lucide="video" class="w-3 h-3 mr-2"></i>
+                                    <span class="text-sm">影片教學</span>
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 右側內容區域 -->
+                <div class="lg:w-3/4">
+                    <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                        <!-- 內容區 -->
+                        <div class="p-8 custom-scrollbar" style="max-height: calc(100vh - 180px); overflow-y: auto;">
+                            <!-- 標題區 -->
+                            <div class="mb-10 text-center">
+                                <h1 class="text-3xl font-bold text-gray-900 mb-4">借貸管理系統使用說明書</h1>
+                                <p class="text-lg text-gray-600 max-w-3xl mx-auto">
+                                    本說明書將引導您快速掌握借貸管理系統的各項功能，讓您能有效率地管理所有借貸案件。
+                                </p>
+                                <div class="mt-6 flex flex-wrap justify-center gap-4">
+                                    <div class="flex items-center text-sm text-gray-500">
+                                        <i data-lucide="clock" class="w-4 h-4 mr-1"></i>
+                                        閱讀時間：約15分鐘
+                                    </div>
+                                    <div class="flex items-center text-sm text-gray-500">
+                                        <i data-lucide="calendar" class="w-4 h-4 mr-1"></i>
+                                        最後更新：2026年1月
+                                    </div>
+                                    <div class="flex items-center text-sm text-gray-500">
+                                        <i data-lucide="tag" class="w-4 h-4 mr-1"></i>
+                                        版本：2.026.0101
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 快速開始 -->
+                            <span id="section-1" class="section-target"></span>
+                            <section class="mb-12 mobile-section">
+                                <h2 class="text-2xl font-bold text-gray-800 mb-6 pb-3 border-b border-gray-200 flex items-center">
+                                    <i data-lucide="play" class="w-6 h-6 mr-3 text-emerald-600"></i>
+                                    快速開始
+                                </h2>
+                                
+                                <div class="mb-8 info-card p-5 rounded-lg">
+                                    <div class="flex items-start">
+                                        <i data-lucide="info" class="w-5 h-5 text-blue-600 mt-0.5 mr-3 flex-shrink-0"></i>
+                                        <div>
+                                            <h3 class="font-bold text-blue-800 mb-2">系統兩種模式</h3>
+                                            <p class="text-gray-700">
+                                                本系統提供兩種使用模式：<strong>正式模式</strong>（需註冊登入，資料儲存於雲端）和<strong>試用模式</strong>（免登入，資料僅存於瀏覽器）。建議正式使用前先試用熟悉操作。
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="space-y-8">
+                                    <!-- 步驟1 -->
+                                    <div class="flex items-start">
+                                        <div class="step-number">1</div>
+                                        <div class="flex-1">
+                                            <h3 class="text-xl font-bold text-gray-800 mb-3">註冊與登入</h3>
+                                            <div class="space-y-4">
+                                                <p>首次使用請點擊「註冊新帳號」建立您的專屬帳號：</p>
+                                                <ul class="list-disc pl-5 space-y-2 text-gray-700">
+                                                    <li>輸入<strong>帳號ID</strong>（用於登入的用戶名稱）</li>
+                                                    <li>輸入<strong>綁定Email</strong>（系統認證用）</li>
+                                                    <li>設定<strong>密碼</strong>並確認</li>
+                                                </ul>
+                                                <div class="warning-card p-4 rounded-lg">
+                                                    <div class="flex items-start">
+                                                        <i data-lucide="alert-triangle" class="w-5 h-5 text-amber-600 mt-0.5 mr-3 flex-shrink-0"></i>
+                                                        <p class="text-amber-800 text-sm">請務必記住您的帳號ID和密碼，系統使用Email+密碼認證，但登入時使用帳號ID。</p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- 步驟2 -->
+                                    <div class="flex items-start">
+                                        <div class="step-number">2</div>
+                                        <div class="flex-1">
+                                            <h3 class="text-xl font-bold text-gray-800 mb-3">試用模式體驗</h3>
+                                            <p class="mb-4">如果不確定是否適合，可以先使用試用模式：</p>
+                                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                                                <div class="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                                                    <div class="flex items-center mb-2">
+                                                        <i data-lucide="check-circle" class="w-5 h-5 text-emerald-600 mr-2"></i>
+                                                        <span class="font-bold text-gray-800">試用模式優點</span>
+                                                    </div>
+                                                    <ul class="text-sm text-gray-600 space-y-1">
+                                                        <li>• 免註冊立即使用</li>
+                                                        <li>• 內建範例資料</li>
+                                                        <li>• 完整功能體驗</li>
+                                                    </ul>
+                                                </div>
+                                                <div class="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                                                    <div class="flex items-center mb-2">
+                                                        <i data-lucide="alert-circle" class="w-5 h-5 text-amber-600 mr-2"></i>
+                                                        <span class="font-bold text-gray-800">試用模式限制</span>
+                                                    </div>
+                                                    <ul class="text-sm text-gray-600 space-y-1">
+                                                        <li>• 資料不儲存於雲端</li>
+                                                        <li>• 關閉瀏覽器後資料消失</li>
+                                                        <li>• 無法多人協作</li>
+                                                    </ul>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- 步驟3 -->
+                                    <div class="flex items-start">
+                                        <div class="step-number">3</div>
+                                        <div class="flex-1">
+                                            <h3 class="text-xl font-bold text-gray-800 mb-3">新增第一筆案件</h3>
+                                            <p class="mb-4">登入後，按照以下步驟新增您的第一筆借貸案件：</p>
+                                            <ol class="list-decimal pl-5 space-y-3 text-gray-700">
+                                                <li>點擊左側選單「案件列表」</li>
+                                                <li>點擊右上角「新增」按鈕</li>
+                                                <li>填寫借款人基本資料</li>
+                                                <li>設定貸款金額與條件</li>
+                                                <li>選擇適當的案件狀態</li>
+                                                <li>點擊「儲存資料」完成</li>
+                                            </ol>
+                                        </div>
+                                    </div>
+                                </div>
+                            </section>
+
+                            <!-- 儀表板操作 -->
+                            <span id="section-2" class="section-target"></span>
+                            <section class="mb-12 mobile-section">
+                                <h2 class="text-2xl font-bold text-gray-800 mb-6 pb-3 border-b border-gray-200 flex items-center">
+                                    <i data-lucide="layout-dashboard" class="w-6 h-6 mr-3 text-emerald-600"></i>
+                                    儀表板操作
+                                </h2>
+                                
+                                <p class="mb-6 text-gray-700">
+                                    儀表板是系統的核心，提供即時財務數據和案件狀態總覽。所有數據卡片都可以自定義調整。
+                                </p>
+
+                                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+                                    <div>
+                                        <h3 class="text-xl font-bold text-gray-800 mb-4">財務卡片說明</h3>
+                                        <div class="space-y-4">
+                                            <div class="flex items-start">
+                                                <div class="w-8 h-8 flex items-center justify-center bg-emerald-100 text-emerald-600 rounded-lg mr-3 flex-shrink-0">
+                                                    <i data-lucide="dollar-sign" class="w-4 h-4"></i>
+                                                </div>
+                                                <div>
+                                                    <h4 class="font-bold text-gray-800">總收入 (累計)</h4>
+                                                    <p class="text-sm text-gray-600">所有案件累計已收到的利息收入總和</p>
+                                                </div>
+                                            </div>
+                                            <div class="flex items-start">
+                                                <div class="w-8 h-8 flex items-center justify-center bg-emerald-100 text-emerald-600 rounded-lg mr-3 flex-shrink-0">
+                                                    <i data-lucide="trending-up" class="w-4 h-4"></i>
+                                                </div>
+                                                <div>
+                                                    <h4 class="font-bold text-gray-800">淨收入</h4>
+                                                    <p class="text-sm text-gray-600">總收入扣除呆帳金額後的淨收益</p>
+                                                </div>
+                                            </div>
+                                            <div class="flex items-start">
+                                                <div class="w-8 h-8 flex items-center justify-center bg-blue-100 text-blue-600 rounded-lg mr-3 flex-shrink-0">
+                                                    <i data-lucide="file-text" class="w-4 h-4"></i>
+                                                </div>
+                                                <div>
+                                                    <h4 class="font-bold text-gray-800">債權總額</h4>
+                                                    <p class="text-sm text-gray-600">尚未收回的借款總額（狀態1+3+5欠款總和）</p>
+                                                </div>
+                                            </div>
+                                            <div class="flex items-start">
+                                                <div class="w-8 h-8 flex items-center justify-center bg-amber-100 text-amber-600 rounded-lg mr-3 flex-shrink-0">
+                                                    <i data-lucide="credit-card" class="w-4 h-4"></i>
+                                                </div>
+                                                <div>
+                                                    <h4 class="font-bold text-gray-800">目前放款額</h4>
+                                                    <p class="text-sm text-gray-600">當前放款的總額度（狀態1+3+5借款金額總和）</p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div>
+                                        <h3 class="text-xl font-bold text-gray-800 mb-4">卡片自定義功能</h3>
+                                        <div class="space-y-4">
+                                            <div class="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                                                <h4 class="font-bold text-gray-800 mb-2 flex items-center">
+                                                    <i data-lucide="move" class="w-4 h-4 mr-2 text-blue-600"></i>
+                                                    拖放調整位置
+                                                </h4>
+                                                <p class="text-sm text-gray-600">直接拖放卡片到您喜歡的位置，系統會自動記住您的設定。</p>
+                                            </div>
+                                            <div class="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                                                <h4 class="font-bold text-gray-800 mb-2 flex items-center">
+                                                    <i data-lucide="palette" class="w-4 h-4 mr-2 text-purple-600"></i>
+                                                    變更卡片顏色
+                                                </h4>
+                                                <p class="text-sm text-gray-600">點擊卡片右上角的調色盤圖示，循環切換6種顏色主題。</p>
+                                            </div>
+                                            <div class="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                                                <h4 class="font-bold text-gray-800 mb-2 flex items-center">
+                                                    <i data-lucide="maximize-2" class="w-4 h-4 mr-2 text-emerald-600"></i>
+                                                    調整卡片大小
+                                                </h4>
+                                                <p class="text-sm text-gray-600">點擊卡片右上角的最大化/最小化圖示，切換1欄或2欄寬度。</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="success-card p-5 rounded-lg mb-8">
+                                    <div class="flex items-start">
+                                        <i data-lucide="lightbulb" class="w-5 h-5 text-emerald-600 mt-0.5 mr-3 flex-shrink-0"></i>
+                                        <div>
+                                            <h3 class="font-bold text-emerald-800 mb-2">使用小技巧</h3>
+                                            <p class="text-gray-700">
+                                                點擊任何財務卡片，可以直接查看該指標的詳細案件列表。例如點擊「本月應收款」卡片，會顯示所有本月應收款的案件明細。
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="mb-8">
+                                    <h3 class="text-xl font-bold text-gray-800 mb-4">系統案件狀態區塊</h3>
+                                    <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
+                                        <div class="bg-emerald-50 p-4 rounded-lg border border-emerald-200">
+                                            <div class="text-3xl font-bold text-emerald-800 mb-2">進行中</div>
+                                            <p class="text-sm text-emerald-700">正常還款中的案件</p>
+                                        </div>
+                                        <div class="bg-red-50 p-4 rounded-lg border border-red-200">
+                                            <div class="text-3xl font-bold text-red-800 mb-2">本期逾期</div>
+                                            <p class="text-sm text-red-700">本月逾期未繳的案件</p>
+                                        </div>
+                                        <div class="bg-gray-100 p-4 rounded-lg border border-gray-300">
+                                            <div class="text-3xl font-bold text-gray-800 mb-2">結案</div>
+                                            <p class="text-sm text-gray-700">已結清完成的案件</p>
+                                        </div>
+                                        <div class="bg-pink-50 p-4 rounded-lg border border-pink-200">
+                                            <div class="text-3xl font-bold text-pink-800 mb-2">呆帳</div>
+                                            <p class="text-sm text-pink-700">無法收回的壞帳案件</p>
+                                        </div>
+                                        <div class="bg-purple-50 p-4 rounded-lg border border-purple-200">
+                                            <div class="text-3xl font-bold text-purple-800 mb-2">協商中</div>
+                                            <p class="text-sm text-purple-700">正在協商還款條件的案件</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </section>
+
+                            <!-- 案件管理 -->
+                            <span id="section-3" class="section-target"></span>
+                            <section class="mb-12 mobile-section">
+                                <h2 class="text-2xl font-bold text-gray-800 mb-6 pb-3 border-b border-gray-200 flex items-center">
+                                    <i data-lucide="database" class="w-6 h-6 mr-3 text-emerald-600"></i>
+                                    案件管理
+                                </h2>
+                                
+                                <div class="mb-8">
+                                    <h3 class="text-xl font-bold text-gray-800 mb-4">案件狀態說明</h3>
+                                    <table class="manual-table">
+                                        <thead>
+                                            <tr>
+                                                <th>狀態代碼</th>
+                                                <th>狀態名稱</th>
+                                                <th>說明</th>
+                                                <th>顏色標示</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <tr>
+                                                <td><span class="font-bold">0</span></td>
+                                                <td>結案</td>
+                                                <td>正常結清完成的案件，借款人姓名顯示為灰色</td>
+                                                <td><span class="px-2 py-1 bg-gray-100 text-gray-600 rounded text-xs">灰色</span></td>
+                                            </tr>
+                                            <tr>
+                                                <td><span class="font-bold">1</span></td>
+                                                <td>進行中</td>
+                                                <td>正常還款中的案件，系統預設狀態</td>
+                                                <td><span class="px-2 py-1 bg-emerald-100 text-emerald-600 rounded text-xs">綠色</span></td>
+                                            </tr>
+                                            <tr>
+                                                <td><span class="font-bold">3</span></td>
+                                                <td>呆帳</td>
+                                                <td>無法收回的壞帳，借款人姓名顯示為紅色</td>
+                                                <td><span class="px-2 py-1 bg-red-100 text-red-600 rounded text-xs">紅色</span></td>
+                                            </tr>
+                                            <tr>
+                                                <td><span class="font-bold">4</span></td>
+                                                <td>已結案呆帳</td>
+                                                <td>已結案但列為呆帳的案件，借款人姓名顯示為橙色</td>
+                                                <td><span class="px-2 py-1 bg-orange-100 text-orange-600 rounded text-xs">橙色</span></td>
+                                            </tr>
+                                            <tr>
+                                                <td><span class="font-bold">5</span></td>
+                                                <td>協商中</td>
+                                                <td>正在協商還款條件的案件，借款人姓名顯示為紫色</td>
+                                                <td><span class="px-2 py-1 bg-purple-100 text-purple-600 rounded text-xs">紫色</span></td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+
+                                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+                                    <div>
+                                        <h3 class="text-xl font-bold text-gray-800 mb-4">協商案件（狀態5）</h3>
+                                        <div class="space-y-4">
+                                            <p>協商案件是借款人因故無法按原條件還款，經雙方協商後的新還款方案：</p>
+                                            <ul class="list-disc pl-5 space-y-2 text-gray-700">
+                                                <li>每月固定還款<strong>協商本金</strong>，無利息</li>
+                                                <li>需在新增/編輯案件時設定「協商本金」欄位</li>
+                                                <li>本金欄位顯示為「協商:$金額」，利息欄位顯示0</li>
+                                                <li>還款日程僅記錄本金還款</li>
+                                            </ul>
+                                            <div class="info-card p-4 rounded-lg">
+                                                <p class="text-sm text-blue-800">
+                                                    <i data-lucide="info" class="w-4 h-4 inline mr-1"></i>
+                                                    協商案件同樣會計入債權總額和呆帳金額統計中。
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div>
+                                        <h3 class="text-xl font-bold text-gray-800 mb-4">案件篩選功能</h3>
+                                        <div class="space-y-3">
+                                            <div class="flex items-center p-3 bg-gray-50 rounded-lg">
+                                                <div class="w-10 h-10 flex items-center justify-center bg-red-100 text-red-600 rounded-lg mr-3">
+                                                    <i data-lucide="alert-circle" class="w-5 h-5"></i>
+                                                </div>
+                                                <div>
+                                                    <h4 class="font-bold text-gray-800">所有未繳</h4>
+                                                    <p class="text-sm text-gray-600">顯示所有本月未繳款的案件</p>
+                                                </div>
+                                            </div>
+                                            <div class="flex items-center p-3 bg-gray-50 rounded-lg">
+                                                <div class="w-10 h-10 flex items-center justify-center bg-amber-100 text-amber-600 rounded-lg mr-3">
+                                                    <i data-lucide="alert-triangle" class="w-5 h-5"></i>
+                                                </div>
+                                                <div>
+                                                    <h4 class="font-bold text-gray-800">逾期未繳</h4>
+                                                    <p class="text-sm text-gray-600">顯示已超過還款日期的案件</p>
+                                                </div>
+                                            </div>
+                                            <div class="flex items-center p-3 bg-gray-50 rounded-lg">
+                                                <div class="w-10 h-10 flex items-center justify-center bg-blue-100 text-blue-600 rounded-lg mr-3">
+                                                    <i data-lucide="list-checks" class="w-5 h-5"></i>
+                                                </div>
+                                                <div>
+                                                    <h4 class="font-bold text-gray-800">所有未結案</h4>
+                                                    <p class="text-sm text-gray-600">顯示狀態1、3、5的案件（進行中、呆帳、協商中）</p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="mb-8">
+                                    <h3 class="text-xl font-bold text-gray-800 mb-4">批次刪除功能</h3>
+                                    <div class="bg-gray-50 p-5 rounded-lg border border-gray-200">
+                                        <div class="flex items-start mb-4">
+                                            <div class="w-12 h-12 flex items-center justify-center bg-red-100 text-red-600 rounded-lg mr-4 flex-shrink-0">
+                                                <i data-lucide="trash-2" class="w-6 h-6"></i>
+                                            </div>
+                                            <div>
+                                                <h4 class="font-bold text-gray-800 text-lg mb-2">安全批次刪除案件</h4>
+                                                <p class="text-gray-700">當需要清理大量無效案件時，可以使用批次刪除功能：</p>
+                                            </div>
+                                        </div>
+                                        <div class="space-y-3 ml-16">
+                                            <div class="flex items-center">
+                                                <div class="w-6 h-6 flex items-center justify-center bg-blue-100 text-blue-600 rounded-full mr-3">1</div>
+                                                <span>點擊「批次刪除」按鈕進入批次模式</span>
+                                            </div>
+                                            <div class="flex items-center">
+                                                <div class="w-6 h-6 flex items-center justify-center bg-blue-100 text-blue-600 rounded-full mr-3">2</div>
+                                                <span>勾選要刪除的案件（可「全選本頁」）</span>
+                                            </div>
+                                            <div class="flex items-center">
+                                                <div class="w-6 h-6 flex items-center justify-center bg-blue-100 text-blue-600 rounded-full mr-3">3</div>
+                                                <span>點擊「刪除選取案件」</span>
+                                            </div>
+                                            <div class="flex items-center">
+                                                <div class="w-6 h-6 flex items-center justify-center bg-blue-100 text-blue-600 rounded-full mr-3">4</div>
+                                                <span>系統顯示確認訊息，列出前5筆案件</span>
+                                            </div>
+                                            <div class="flex items-center">
+                                                <div class="w-6 h-6 flex items-center justify-center bg-blue-100 text-blue-600 rounded-full mr-3">5</div>
+                                                <span>確認後永久刪除，無法復原</span>
+                                            </div>
+                                        </div>
+                                        <div class="warning-card p-4 rounded-lg mt-4">
+                                            <div class="flex items-start">
+                                                <i data-lucide="alert-octagon" class="w-5 h-5 text-amber-600 mt-0.5 mr-3 flex-shrink-0"></i>
+                                                <p class="text-amber-800 text-sm">批次刪除是永久性操作，刪除後無法恢復，請謹慎使用。</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </section>
+
+                            <!-- 還款入帳 -->
+                            <span id="section-4" class="section-target"></span>
+                            <section class="mb-12 mobile-section">
+                                <h2 class="text-2xl font-bold text-gray-800 mb-6 pb-3 border-b border-gray-200 flex items-center">
+                                    <i data-lucide="banknote" class="w-6 h-6 mr-3 text-emerald-600"></i>
+                                    還款入帳
+                                </h2>
+                                
+                                <div class="mb-8">
+                                    <h3 class="text-xl font-bold text-gray-800 mb-4">還款入帳流程</h3>
+                                    <div class="space-y-6">
+                                        <div class="flex items-start">
+                                            <div class="w-10 h-10 flex items-center justify-center bg-blue-100 text-blue-600 rounded-full mr-4 flex-shrink-0">
+                                                <i data-lucide="search" class="w-5 h-5"></i>
+                                            </div>
+                                            <div>
+                                                <h4 class="font-bold text-gray-800 mb-2">1. 搜尋未繳案件</h4>
+                                                <p class="text-gray-700">在還款入帳頁面，系統會自動篩選出所有未繳案件。您可以：</p>
+                                                <ul class="list-disc pl-5 mt-2 text-gray-600">
+                                                    <li>直接從下拉選單選擇案件</li>
+                                                    <li>輸入編號或姓名搜尋未繳案件</li>
+                                                    <li>搜尋結果會標示「此案件本月尚未繳款」</li>
+                                                </ul>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="flex items-start">
+                                            <div class="w-10 h-10 flex items-center justify-center bg-blue-100 text-blue-600 rounded-full mr-4 flex-shrink-0">
+                                                <i data-lucide="edit" class="w-5 h-5"></i>
+                                            </div>
+                                            <div>
+                                                <h4 class="font-bold text-gray-800 mb-2">2. 輸入還款資訊</h4>
+                                                <p class="text-gray-700">選擇案件後，系統會自動帶入應還金額：</p>
+                                                <ul class="list-disc pl-5 mt-2 text-gray-600">
+                                                    <li><strong>還款日期</strong>：預設為今天，可修改</li>
+                                                    <li><strong>還款本金</strong>：系統自動帶入，可調整</li>
+                                                    <li><strong>還款利息</strong>：系統自動帶入，可調整</li>
+                                                    <li>協商案件只顯示本金欄位（利息為0）</li>
+                                                </ul>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="flex items-start">
+                                            <div class="w-10 h-10 flex items-center justify-center bg-blue-100 text-blue-600 rounded-full mr-4 flex-shrink-0">
+                                                <i data-lucide="save" class="w-5 h-5"></i>
+                                            </div>
+                                            <div>
+                                                <h4 class="font-bold text-gray-800 mb-2">3. 確認入帳</h4>
+                                                <p class="text-gray-700">輸入完成後點擊「確認入帳」：</p>
+                                                <ul class="list-disc pl-5 mt-2 text-gray-600">
+                                                    <li>系統會將還款記錄加入該案件的還款日程</li>
+                                                    <li>財務指標會即時更新</li>
+                                                    <li>案件的本月繳款狀態變更為「已繳清」</li>
+                                                    <li>系統顯示成功訊息</li>
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="success-card p-5 rounded-lg">
+                                    <div class="flex items-start">
+                                        <i data-lucide="zap" class="w-5 h-5 text-emerald-600 mt-0.5 mr-3 flex-shrink-0"></i>
+                                        <div>
+                                            <h3 class="font-bold text-emerald-800 mb-2">快捷還款技巧</h3>
+                                            <p class="text-gray-700 mb-3">
+                                                在案件列表頁面，直接點擊案件的「本月繳款狀態」欄位（綠色「已繳清」或紅色「未繳」文字），
+                                                系統會自動跳轉到還款入帳頁面並選擇該案件，節省搜尋時間。
+                                            </p>
+                                            <div class="flex items-center text-sm text-emerald-700">
+                                                <i data-lucide="mouse-pointer" class="w-4 h-4 mr-2"></i>
+                                                <span>試試看：在案件列表點擊任何案件的繳款狀態文字</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </section>
+
+                            <!-- 資料匯入匯出 -->
+                            <span id="section-5" class="section-target"></span>
+                            <section class="mb-12 mobile-section">
+                                <h2 class="text-2xl font-bold text-gray-800 mb-6 pb-3 border-b border-gray-200 flex items-center">
+                                    <i data-lucide="file-text" class="w-6 h-6 mr-3 text-emerald-600"></i>
+                                    資料匯入匯出
+                                </h2>
+                                
+                                <div class="mb-8">
+                                    <h3 class="text-xl font-bold text-gray-800 mb-4">CSV匯出功能</h3>
+                                    <div class="bg-gray-50 p-5 rounded-lg border border-gray-200">
+                                        <div class="flex items-start mb-4">
+                                            <div class="w-12 h-12 flex items-center justify-center bg-teal-100 text-teal-600 rounded-lg mr-4 flex-shrink-0">
+                                                <i data-lucide="download" class="w-6 h-6"></i>
+                                            </div>
+                                            <div>
+                                                <h4 class="font-bold text-gray-800 text-lg mb-2">垂直格式報表匯出</h4>
+                                                <p class="text-gray-700">系統採用垂直格式（欄位為列，案件為欄）匯出CSV，這種格式更容易閱讀和比對。</p>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="space-y-4">
+                                            <div>
+                                                <h5 class="font-bold text-gray-700 mb-2">匯出步驟：</h5>
+                                                <ol class="list-decimal pl-5 space-y-2 text-gray-600">
+                                                    <li>在案件列表頁面，使用篩選或搜尋功能找到要匯出的案件</li>
+                                                    <li>點擊「匯出 CSV」按鈕</li>
+                                                    <li>系統會產生檔名為「借貸管理資料_垂直格式_日期.csv」的檔案</li>
+                                                    <li>檔案會自動下載到您的電腦</li>
+                                                </ol>
+                                            </div>
+                                            
+                                            <div>
+                                                <h5 class="font-bold text-gray-700 mb-2">檔案格式說明：</h5>
+                                                <ul class="list-disc pl-5 space-y-1 text-gray-600">
+                                                    <li>第一列為欄位名稱（編號、狀態、借款人等）</li>
+                                                    <li>第一欄為案件1的資料，第二欄為案件2的資料，依此類推</li>
+                                                    <li>包含還款日程資訊</li>
+                                                    <li>使用Big5編碼，可用Excel開啟</li>
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="mb-8">
+                                    <h3 class="text-xl font-bold text-gray-800 mb-4">CSV匯入功能</h3>
+                                    <div class="bg-gray-50 p-5 rounded-lg border border-gray-200">
+                                        <div class="flex items-start mb-4">
+                                            <div class="w-12 h-12 flex items-center justify-center bg-indigo-100 text-indigo-600 rounded-lg mr-4 flex-shrink-0">
+                                                <i data-lucide="upload" class="w-6 h-6"></i>
+                                            </div>
+                                            <div>
+                                                <h4 class="font-bold text-gray-800 text-lg mb-2">批次匯入案件資料</h4>
+                                                <p class="text-gray-700">可將外部資料或備份資料匯入系統，節逐一新增案件的時間。</p>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="space-y-4">
+                                            <div class="warning-card p-4 rounded-lg">
+                                                <div class="flex items-start">
+                                                    <i data-lucide="alert-triangle" class="w-5 h-5 text-amber-600 mt-0.5 mr-3 flex-shrink-0"></i>
+                                                    <div>
+                                                        <h5 class="font-bold text-amber-800 mb-1">重要注意事項</h5>
+                                                        <ul class="text-sm text-amber-700 space-y-1">
+                                                            <li>• 匯入功能僅在登入後可用（試用模式無法匯入）</li>
+                                                            <li>• 檔案必須為CSV格式，Big5編碼</li>
+                                                            <li>• 建議先匯出現有資料了解格式</li>
+                                                            <li>• 匯入前建議先備份現有資料</li>
+                                                        </ul>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            
+                                            <div>
+                                                <h5 class="font-bold text-gray-700 mb-2">匯入步驟：</h5>
+                                                <ol class="list-decimal pl-5 space-y-2 text-gray-600">
+                                                    <li>準備符合格式的CSV檔案（建議用匯出的檔案作為範本）</li>
+                                                    <li>在案件列表頁面，點擊「匯入 CSV」按鈕</li>
+                                                    <li>選擇要匯入的檔案</li>
+                                                    <li>系統會解析檔案並顯示處理進度</li>
+                                                    <li>匯入成功後會顯示新增案件數量</li>
+                                                </ol>
+                                            </div>
+                                            
+                                            <div class="info-card p-4 rounded-lg">
+                                                <div class="flex items-start">
+                                                    <i data-lucide="info" class="w-5 h-5 text-blue-600 mt-0.5 mr-3 flex-shrink-0"></i>
+                                                    <div>
+                                                        <h5 class="font-bold text-blue-800 mb-1">匯入格式提示</h5>
+                                                        <p class="text-sm text-blue-700">匯入檔案需包含以下基本欄位：狀態、方式、借款人、借款金額、放款日期。其他欄位可為空值。</p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </section>
+
+                            <!-- 手機版操作 -->
+                            <span id="section-6" class="section-target"></span>
+                            <section class="mb-12 mobile-section">
+                                <h2 class="text-2xl font-bold text-gray-800 mb-6 pb-3 border-b border-gray-200 flex items-center">
+                                    <i data-lucide="smartphone" class="w-6 h-6 mr-3 text-emerald-600"></i>
+                                    手機版操作
+                                </h2>
+                                
+                                <div class="mb-8">
+                                    <p class="text-gray-700 mb-6">
+                                        系統自動偵測裝置類型，在手機上會顯示優化的卡片式介面，提供更好的觸控體驗。
+                                    </p>
+                                    
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+                                        <div>
+                                            <h3 class="text-xl font-bold text-gray-800 mb-4">手機版特色</h3>
+                                            <div class="space-y-4">
+                                                <div class="flex items-start">
+                                                    <div class="w-10 h-10 flex items-center justify-center bg-blue-100 text-blue-600 rounded-lg mr-3 flex-shrink-0">
+                                                        <i data-lucide="smartphone" class="w-5 h-5"></i>
+                                                    </div>
+                                                    <div>
+                                                        <h4 class="font-bold text-gray-800">卡片式設計</h4>
+                                                        <p class="text-sm text-gray-600">案件以卡片形式顯示，更容易在手機上閱讀</p>
+                                                    </div>
+                                                </div>
+                                                <div class="flex items-start">
+                                                    <div class="w-10 h-10 flex items-center justify-center bg-blue-100 text-blue-600 rounded-lg mr-3 flex-shrink-0">
+                                                        <i data-lucide="touchpad" class="w-5 h-5"></i>
+                                                    </div>
+                                                    <div>
+                                                        <h4 class="font-bold text-gray-800">觸控優化</h4>
+                                                        <p class="text-sm text-gray-600">按鈕和輸入區域加大，方便手指操作</p>
+                                                    </div>
+                                                </div>
+                                                <div class="flex items-start">
+                                                    <div class="w-10 h-10 flex items-center justify-center bg-blue-100 text-blue-600 rounded-lg mr-3 flex-shrink-0">
+                                                        <i data-lucide="check-square" class="w-5 h-5"></i>
+                                                    </div>
+                                                    <div>
+                                                        <h4 class="font-bold text-gray-800">批次選擇</h4>
+                                                        <p class="text-sm text-gray-600">左上角顯示勾選框，方便批次操作</p>
+                                                    </div>
+                                                </div>
+                                                <div class="flex items-start">
+                                                    <div class="w-10 h-10 flex items-center justify-center bg-blue-100 text-blue-600 rounded-lg mr-3 flex-shrink-0">
+                                                        <i data-lucide="refresh-cw" class="w-5 h-5"></i>
+                                                    </div>
+                                                    <div>
+                                                        <h4 class="font-bold text-gray-800">響應式佈局</h4>
+                                                        <p class="text-sm text-gray-600">根據螢幕大小自動調整佈局和字體大小</p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        
+                                        <div>
+                                            <h3 class="text-xl font-bold text-gray-800 mb-4">手機操作提示</h3>
+                                            <div class="space-y-3">
+                                                <div class="bg-gray-50 p-3 rounded-lg">
+                                                    <div class="flex items-center mb-1">
+                                                        <i data-lucide="chevron-up" class="w-4 h-4 text-gray-500 mr-2"></i>
+                                                        <span class="font-medium text-gray-700">上下滑動瀏覽</span>
+                                                    </div>
+                                                    <p class="text-sm text-gray-600">上下滑動查看案件列表，卡片會自動排列</p>
+                                                </div>
+                                                <div class="bg-gray-50 p-3 rounded-lg">
+                                                    <div class="flex items-center mb-1">
+                                                        <i data-lucide="mouse-pointer" class="w-4 h-4 text-gray-500 mr-2"></i>
+                                                        <span class="font-medium text-gray-700">點擊卡片操作</span>
+                                                    </div>
+                                                    <p class="text-sm text-gray-600">點擊案件卡片上的按鈕執行還款、編輯、刪除等操作</p>
+                                                </div>
+                                                <div class="bg-gray-50 p-3 rounded-lg">
+                                                    <div class="flex items-center mb-1">
+                                                        <i data-lucide="search" class="w-4 h-4 text-gray-500 mr-2"></i>
+                                                        <span class="font-medium text-gray-700">搜尋案件</span>
+                                                    </div>
+                                                    <p class="text-sm text-gray-600">使用頂部的搜尋框快速查找案件</p>
+                                                </div>
+                                                <div class="bg-gray-50 p-3 rounded-lg">
+                                                    <div class="flex items-center mb-1">
+                                                        <i data-lucide="filter" class="w-4 h-4 text-gray-500 mr-2"></i>
+                                                        <span class="font-medium text-gray-700">切換篩選</span>
+                                                    </div>
+                                                    <p class="text-sm text-gray-600">使用篩選按鈕快速查看不同狀態案件</p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="success-card p-5 rounded-lg">
+                                    <div class="flex items-start">
+                                        <i data-lucide="wifi" class="w-5 h-5 text-emerald-600 mt-0.5 mr-3 flex-shrink-0"></i>
+                                        <div>
+                                            <h3 class="font-bold text-emerald-800 mb-2">離線使用提醒</h3>
+                                            <p class="text-gray-700">
+                                                手機版同樣支援離線操作（試用模式），但正式模式需要網路連線才能同步資料到雲端。
+                                                建議在網路穩定的環境下使用正式模式，以確保資料同步。
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </section>
+
+                            <!-- 常見問題 -->
+                            <span id="section-7" class="section-target"></span>
+                            <section class="mb-12 mobile-section">
+                                <h2 class="text-2xl font-bold text-gray-800 mb-6 pb-3 border-b border-gray-200 flex items-center">
+                                    <i data-lucide="help-circle" class="w-6 h-6 mr-3 text-emerald-600"></i>
+                                    常見問題
+                                </h2>
+                                
+                                <div class="space-y-6">
+                                    <div class="border border-gray-200 rounded-lg overflow-hidden">
+                                        <button class="w-full text-left p-5 bg-gray-50 hover:bg-gray-100 flex justify-between items-center" onclick="toggleFAQ(1)">
+                                            <span class="font-bold text-gray-800">1. 無法登入系統怎麼辦？</span>
+                                            <i data-lucide="chevron-down" class="w-5 h-5 text-gray-500" id="faq-icon-1"></i>
+                                        </button>
+                                        <div class="p-5 hidden" id="faq-content-1">
+                                            <div class="space-y-3 text-gray-700">
+                                                <p>請按照以下步驟檢查：</p>
+                                                <ol class="list-decimal pl-5 space-y-2">
+                                                    <li>確認帳號ID和密碼正確（注意大小寫）</li>
+                                                    <li>確認網路連線正常</li>
+                                                    <li>如果是第一次使用，請先註冊新帳號</li>
+                                                    <li>如忘記密碼，請聯絡系統管理員重設</li>
+                                                </ol>
+                                                <div class="info-card p-3 rounded-lg mt-3">
+                                                    <p class="text-sm text-blue-800">
+                                                        <i data-lucide="info" class="w-4 h-4 inline mr-1"></i>
+                                                        系統使用帳號ID+密碼認證，但實際綁定的是Email。請確認輸入的帳號ID正確。
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="border border-gray-200 rounded-lg overflow-hidden">
+                                        <button class="w-full text-left p-5 bg-gray-50 hover:bg-gray-100 flex justify-between items-center" onclick="toggleFAQ(2)">
+                                            <span class="font-bold text-gray-800">2. 資料沒有儲存成功？</span>
+                                            <i data-lucide="chevron-down" class="w-5 h-5 text-gray-500" id="faq-icon-2"></i>
+                                        </button>
+                                        <div class="p-5 hidden" id="faq-content-2">
+                                            <div class="space-y-3 text-gray-700">
+                                                <p>可能的原因和解決方法：</p>
+                                                <ul class="list-disc pl-5 space-y-2">
+                                                    <li><strong>試用模式</strong>：確認您不是使用試用模式（試用模式資料不儲存到雲端）</li>
+                                                    <li><strong>網路問題</strong>：檢查網路連線是否正常</li>
+                                                    <li><strong>登入狀態</strong>：確認您已成功登入（右上角顯示您的帳號）</li>
+                                                    <li><strong>重新整理</strong>：重新整理頁面查看資料是否恢復</li>
+                                                </ul>
+                                                <div class="warning-card p-3 rounded-lg mt-3">
+                                                    <p class="text-sm text-amber-800">
+                                                        <i data-lucide="alert-triangle" class="w-4 h-4 inline mr-1"></i>
+                                                        試用模式的資料僅存在瀏覽器記憶體中，關閉瀏覽器或清除快取後會消失。
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="border border-gray-200 rounded-lg overflow-hidden">
+                                        <button class="w-full text-left p-5 bg-gray-50 hover:bg-gray-100 flex justify-between items-center" onclick="toggleFAQ(3)">
+                                            <span class="font-bold text-gray-800">3. CSV檔案匯入失敗？</span>
+                                            <i data-lucide="chevron-down" class="w-5 h-5 text-gray-500" id="faq-icon-3"></i>
+                                        </button>
+                                        <div class="p-5 hidden" id="faq-content-3">
+                                            <div class="space-y-3 text-gray-700">
+                                                <p>匯入失敗的常見原因：</p>
+                                                <ul class="list-disc pl-5 space-y-2">
+                                                    <li><strong>檔案格式</strong>：確認檔案為CSV格式，副檔名為.csv</li>
+                                                    <li><strong>檔案編碼</strong>：確認檔案使用Big5編碼（可用記事本另存新檔選擇編碼）</li>
+                                                    <li><strong>必填欄位</strong>：確認包含必填欄位（借款人、借款金額、狀態）</li>
+                                                    <li><strong>登入狀態</strong>：確認已登入（試用模式無法匯入）</li>
+                                                </ul>
+                                                <div class="info-card p-3 rounded-lg mt-3">
+                                                    <p class="text-sm text-blue-800">
+                                                        <i data-lucide="lightbulb" class="w-4 h-4 inline mr-1"></i>
+                                                        建議先匯出一份現有資料，了解正確格式後再準備匯入檔案。
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="border border-gray-200 rounded-lg overflow-hidden">
+                                        <button class="w-full text-left p-5 bg-gray-50 hover:bg-gray-100 flex justify-between items-center" onclick="toggleFAQ(4)">
+                                            <span class="font-bold text-gray-800">4. 如何備份我的資料？</span>
+                                            <i data-lucide="chevron-down" class="w-5 h-5 text-gray-500" id="faq-icon-4"></i>
+                                        </button>
+                                        <div class="p-5 hidden" id="faq-content-4">
+                                            <div class="space-y-3 text-gray-700">
+                                                <p>建議定期備份資料，方法如下：</p>
+                                                <ol class="list-decimal pl-5 space-y-2">
+                                                    <li><strong>定期匯出</strong>：每月使用「匯出 CSV」功能備份所有案件</li>
+                                                    <li><strong>多重備份</strong>：保留至少3個時間點的備份檔案</li>
+                                                    <li><strong>異地備份</strong>：將備份檔案儲存於不同位置（電腦、雲端硬碟、隨身碟）</li>
+                                                    <li><strong>測試還原</strong>：定期測試備份檔案能否成功匯入</li>
+                                                </ol>
+                                                <div class="warning-card p-3 rounded-lg mt-3">
+                                                    <p class="text-sm text-amber-800">
+                                                        <i data-lucide="alert-octagon" class="w-4 h-4 inline mr-1"></i>
+                                                        雖然系統資料儲存於雲端，但養成定期備份習慣可避免意外資料損失。
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="border border-gray-200 rounded-lg overflow-hidden">
+                                        <button class="w-full text-left p-5 bg-gray-50 hover:bg-gray-100 flex justify-between items-center" onclick="toggleFAQ(5)">
+                                            <span class="font-bold text-gray-800">5. 協商案件如何設定？</span>
+                                            <i data-lucide="chevron-down" class="w-5 h-5 text-gray-500" id="faq-icon-5"></i>
+                                        </button>
+                                        <div class="p-5 hidden" id="faq-content-5">
+                                            <div class="space-y-3 text-gray-700">
+                                                <p>設定協商案件的步驟：</p>
+                                                <ol class="list-decimal pl-5 space-y-2">
+                                                    <li>新增或編輯案件時，選擇狀態為「5 - 協商中」</li>
+                                                    <li>系統會自動清空期數和利息相關欄位</li>
+                                                    <li>在「協商本金」欄位輸入每期還款金額</li>
+                                                    <li>其他欄位按正常案件填寫</li>
+                                                    <li>儲存後，案件會顯示為紫色，本金欄位顯示「協商:$金額」</li>
+                                                </ol>
+                                                <div class="info-card p-3 rounded-lg mt-3">
+                                                    <p class="text-sm text-blue-800">
+                                                        <i data-lucide="info" class="w-4 h-4 inline mr-1"></i>
+                                                        協商案件每月固定還款本金，無利息。還款入帳時只需輸入本金，利息欄位自動為0。
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </section>
+
+                            <!-- 影片教學區 -->
+                            <span id="video-tutorials" class="section-target"></span>
+                            <section class="mb-12 mobile-section">
+                                <h2 class="text-2xl font-bold text-gray-800 mb-6 pb-3 border-b border-gray-200 flex items-center">
+                                    <i data-lucide="video" class="w-6 h-6 mr-3 text-emerald-600"></i>
+                                    影片教學
+                                </h2>
+                                
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                                    <div class="bg-gray-50 p-6 rounded-lg border border-gray-200">
+                                        <div class="w-full h-48 bg-gray-200 rounded-lg mb-4 flex items-center justify-center">
+                                            <i data-lucide="play-circle" class="w-16 h-16 text-gray-400"></i>
+                                        </div>
+                                        <h3 class="font-bold text-gray-800 mb-2">快速入門教學</h3>
+                                        <p class="text-sm text-gray-600 mb-4">5分鐘快速了解系統基本操作，從註冊到新增第一筆案件。</p>
+                                        <div class="text-xs text-gray-500 flex items-center">
+                                            <i data-lucide="clock" class="w-3 h-3 mr-1"></i>
+                                            影片長度：5分30秒
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="bg-gray-50 p-6 rounded-lg border border-gray-200">
+                                        <div class="w-full h-48 bg-gray-200 rounded-lg mb-4 flex items-center justify-center">
+                                            <i data-lucide="play-circle" class="w-16 h-16 text-gray-400"></i>
+                                        </div>
+                                        <h3 class="font-bold text-gray-800 mb-2">進階功能教學</h3>
+                                        <p class="text-sm text-gray-600 mb-4">深入講解批次刪除、CSV匯入匯出、協商案件等進階功能。</p>
+                                        <div class="text-xs text-gray-500 flex items-center">
+                                            <i data-lucide="clock" class="w-3 h-3 mr-1"></i>
+                                            影片長度：12分15秒
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="mt-6 text-center">
+                                    <p class="text-gray-600 mb-4">影片教學正在製作中，預計2026年2月上線</p>
+                                    <button class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg flex items-center mx-auto">
+                                        <i data-lucide="bell" class="w-4 h-4 mr-2"></i>
+                                        訂閱更新通知
+                                    </button>
+                                </div>
+                            </section>
+
+                            <!-- 結語 -->
+                            <div class="bg-gradient-to-r from-emerald-500 to-teal-600 rounded-xl p-8 text-white text-center">
+                                <h2 class="text-2xl font-bold mb-4">開始使用借貸管理系統</h2>
+                                <p class="mb-6 max-w-2xl mx-auto">現在您已經了解系統的基本操作，可以開始使用系統管理您的借貸案件了。</p>
+                                <div class="flex flex-col sm:flex-row justify-center gap-4">
+                                    <a href="index.html" class="px-6 py-3 bg-white text-emerald-700 font-bold rounded-lg hover:bg-gray-100 transition-colors flex items-center justify-center">
+                                        <i data-lucide="play" class="w-5 h-5 mr-2"></i>
+                                        立即開始使用
+                                    </a>
+                                    <button onclick="printManual()" class="px-6 py-3 bg-emerald-800 text-white font-bold rounded-lg hover:bg-emerald-900 transition-colors flex items-center justify-center">
+                                        <i data-lucide="printer" class="w-5 h-5 mr-2"></i>
+                                        列印使用說明
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <!-- 頁尾 -->
+                            <div class="mt-12 pt-8 border-t border-gray-200 text-center text-gray-500 text-sm">
+                                <p>借貸管理系統版本 2.026.0101 • 最後更新：2026年1月</p>
+                                <p class="mt-2">如有問題或建議，請聯絡系統管理員</p>
+                                <div class="mt-4 flex justify-center space-x-4">
+                                    <a href="#" class="text-gray-400 hover:text-gray-600">
+                                        <i data-lucide="mail" class="w-4 h-4"></i>
+                                    </a>
+                                    <a href="#" class="text-gray-400 hover:text-gray-600">
+                                        <i data-lucide="phone" class="w-4 h-4"></i>
+                                    </a>
+                                    <a href="#" class="text-gray-400 hover:text-gray-600">
+                                        <i data-lucide="message-circle" class="w-4 h-4"></i>
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 初始化圖標
+        lucide.createIcons();
+        
+        // 顯示訊息函數
+        const showMessage = (message, type) => {
+            const container = document.getElementById('message-container');
+            if (!container) return;
+
+            const isError = type === 'error';
+            const bgColor = isError ? 'bg-red-50 border-red-300' : 'bg-emerald-50 border-emerald-300';
+            const textColor = isError ? 'text-red-700' : 'text-emerald-700';
+            const icon = isError ? 'x-circle' : 'check-circle';
+
+            const messageBox = document.createElement('div');
+            messageBox.className = `p-4 mt-3 border rounded-xl shadow-lg flex items-start space-x-3 animate-fade-in pointer-events-auto ${bgColor}`;
+            messageBox.innerHTML = `<i data-lucide="${icon}" class="w-5 h-5 flex-shrink-0 ${textColor}"></i><p class="text-sm font-medium ${textColor}">${message}</p>`;
+            container.prepend(messageBox);
+            lucide.createIcons();
+
+            setTimeout(() => {
+                messageBox.remove();
+            }, 4000);
+        };
+        
+        // 列印功能
+        function printManual() {
+            showMessage("正在準備列印...", "success");
+            setTimeout(() => {
+                window.print();
+            }, 500);
+        }
+        
+        // 常見問題展開/收合
+        function toggleFAQ(num) {
+            const content = document.getElementById(`faq-content-${num}`);
+            const icon = document.getElementById(`faq-icon-${num}`);
+            
+            if (content.classList.contains('hidden')) {
+                content.classList.remove('hidden');
+                icon.setAttribute('data-lucide', 'chevron-up');
+            } else {
+                content.classList.add('hidden');
+                icon.setAttribute('data-lucide', 'chevron-down');
+            }
+            lucide.createIcons();
+        }
+        
+        // 回到頂部按鈕
+        const backToTopButton = document.createElement('button');
+        backToTopButton.innerHTML = '<i data-lucide="chevron-up" class="w-5 h-5"></i>';
+        backToTopButton.className = 'fixed bottom-6 right-6 w-12 h-12 bg-emerald-600 text-white rounded-full shadow-lg hover:bg-emerald-700 transition-colors z-40 hidden items-center justify-center';
+        backToTopButton.id = 'backToTop';
+        backToTopButton.onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
+        document.body.appendChild(backToTopButton);
+        
+        // 顯示/隱藏回到頂部按鈕
+        window.addEventListener('scroll', () => {
+            const backToTop = document.getElementById('backToTop');
+            if (window.scrollY > 300) {
+                backToTop.classList.remove('hidden');
+                backToTop.classList.add('flex');
+            } else {
+                backToTop.classList.remove('flex');
+                backToTop.classList.add('hidden');
+            }
+        });
+        
+        // 頁面載入完成後初始化
+        document.addEventListener('DOMContentLoaded', () => {
+            lucide.createIcons();
+            
+            // 顯示歡迎訊息
+            setTimeout(() => {
+                showMessage("歡迎使用借貸管理系統說明書！", "success");
+            }, 1000);
+        });
+    </script>
+</body>
+</html>

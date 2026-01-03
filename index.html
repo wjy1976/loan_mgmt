@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>借貸管理系統 (ver 2.026.0103)</title>
+    <title>借貸管理系統 (ver 2.026.0101) - 含強制刪除功能</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Lucide Icons -->
@@ -728,7 +728,7 @@
             window.refreshListUI();
         };
 
-        // 新增：複製案件功能
+        // 修正：複製案件功能 - 修正ID處理問題
         window.duplicateCase = () => {
             // 複製當前表單資料
             const originalFormData = { ...formData };
@@ -736,6 +736,7 @@
             // 創建複製的資料，清空案件編號和ID
             const duplicatedData = {
                 ...originalFormData,
+                id: '', // 修正：清空ID，確保儲存時視為新案件
                 caseNumber: '', // 清空案件編號
                 displayId: '', // 清空顯示編號
                 schedule: '', // 清空還款日程（新案件應該從頭開始）
@@ -887,6 +888,102 @@
                         window.showError("更新失敗，請檢查網路連線。");
                     }
                 }
+            }
+        };
+
+        // 新增：強制刪除函數
+        window.forceDeleteCase = async (id) => {
+            window.showConfirm("確定要強制刪除此案件嗎？此操作將直接從資料庫移除，無法復原。", async (confirmed) => {
+                if (!confirmed) return;
+                
+                showLoading(true, "強制刪除中...");
+                
+                try {
+                    if (firebaseAvailable && !state.isDemoMode) {
+                        // 直接從 Firebase 刪除
+                        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'loan_records', id));
+                        
+                        // 更新本地狀態
+                        state.records = state.records.filter(r => r.id !== id);
+                        
+                        showLoading(false);
+                        window.showSuccess("案件已成功強制刪除。");
+                        renderApp();
+                    } else if (state.isDemoMode) {
+                        // 演示模式
+                        state.records = state.records.filter(r => r.id !== id);
+                        showLoading(false);
+                        window.showSuccess("案件已成功強制刪除。");
+                        renderApp();
+                    } else {
+                        showLoading(false);
+                        window.showError("無法執行強制刪除：無資料庫連線");
+                    }
+                } catch (error) {
+                    showLoading(false);
+                    console.error("強制刪除失敗:", error);
+                    window.showError(`強制刪除失敗: ${error.message}`);
+                }
+            });
+        };
+
+        // 新增：管理員強制刪除工具
+        window.adminForceDelete = () => {
+            const caseId = prompt("請輸入要強制刪除的案件ID:");
+            if (caseId && confirm(`確定要強制刪除案件 ${caseId} 嗎？`)) {
+                window.forceDeleteCase(caseId);
+            }
+        };
+
+        // 新增：資料庫修復功能
+        window.repairDatabase = async () => {
+            if (!confirm("確定要執行資料庫修復嗎？這可能會影響所有案件資料。")) return;
+            
+            showLoading(true, "修復資料庫中...");
+            
+            try {
+                // 取得所有案件
+                const loanRecordsRef = collection(db, 'artifacts', appId, 'public', 'data', 'loan_records');
+                const snapshot = await getDocs(loanRecordsRef);
+                
+                let repairedCount = 0;
+                let deletedCount = 0;
+                
+                // 檢查每個案件
+                for (const docSnap of snapshot.docs) {
+                    const data = docSnap.data();
+                    const id = docSnap.id;
+                    
+                    // 檢查案件資料是否完整
+                    if (!data.ownerUid || !data.borrower) {
+                        console.log("發現問題案件:", id, data);
+                        
+                        // 修復選項1：補充缺失資料
+                        if (data.borrower && !data.ownerUid) {
+                            await updateDoc(docSnap.ref, {
+                                ownerUid: state.currentUserUid,
+                                updatedAt: serverTimestamp()
+                            });
+                            repairedCount++;
+                        }
+                        // 修復選項2：刪除無效案件
+                        else if (!data.borrower && !data.loanAmount) {
+                            await deleteDoc(docSnap.ref);
+                            deletedCount++;
+                        }
+                    }
+                }
+                
+                showLoading(false);
+                window.showSuccess(`修復完成！修復 ${repairedCount} 筆案件，刪除 ${deletedCount} 筆無效案件。`);
+                
+                // 重新載入頁面
+                setTimeout(() => location.reload(), 2000);
+                
+            } catch (error) {
+                showLoading(false);
+                console.error("修復失敗:", error);
+                window.showError(`修復失敗: ${error.message}`);
             }
         };
 
@@ -1728,8 +1825,11 @@
             
             const dataToSave = { ...formData, updatedAt: serverTimestamp() }; 
             
+            // 修正：檢查是否有ID，如果沒有ID就是新增案件
+            const isNewCase = !formData.id || formData.id === '';
+            
             if (state.isDemoMode) { 
-                if (!state.editingRecord) { 
+                if (isNewCase) { 
                     const newRec = { 
                         ...dataToSave, 
                         id: `new_${Date.now()}`, 
@@ -1739,14 +1839,14 @@
                     }; 
                     state.records.push(newRec); 
                 } else { 
-                    const idx = state.records.findIndex(r => r.id === state.editingRecord.id); 
+                    const idx = state.records.findIndex(r => r.id === formData.id); 
                     if (idx !== -1) state.records[idx] = { ...state.records[idx], ...dataToSave }; 
                 } 
                 
             } else if (firebaseAvailable) { 
                 const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'loan_records'); 
                 
-                if (!state.editingRecord) { 
+                if (isNewCase) { 
                     dataToSave.createdAt = serverTimestamp(); 
                     dataToSave.ownerUid = state.currentUserUid;
                     
@@ -1755,7 +1855,7 @@
                     
                     window.showSuccess(`案件資料已成功新增。`);
                 } else { 
-                    await updateDoc(doc(colRef, state.editingRecord.id), dataToSave);
+                    await updateDoc(doc(colRef, formData.id), dataToSave);
                     window.showSuccess(`案件資料已成功更新。`);
                 } 
             } 
@@ -1998,7 +2098,7 @@
         window.handleRepaymentSelect = (id) => { 
             const record = state.records.find(r => r.id === id); 
             if (record) { 
-                const { isPaid } = getPaymentStatus(record); 
+                const { isPaid } = getPaymentStatus(r); 
                 let defP = 0;
                 let defI = 0;
                 
@@ -2812,6 +2912,11 @@
                         <button onclick="window.handleDelete('${r.id}')" class="mobile-action-button bg-red-100 text-red-600 hover:bg-red-200" title="刪除">
                             <i data-lucide="trash-2" class="w-4 h-4"></i>
                         </button>
+                        ${((state.isAdmin || r.ownerUid === state.currentUserUid) && !state.isDemoMode) ? 
+                            `<button onclick="window.forceDeleteCase('${r.id}')" class="mobile-action-button bg-red-200 text-red-800 hover:bg-red-300 border border-red-300" title="強制刪除（管理員）">
+                                <i data-lucide="zap" class="w-4 h-4"></i>
+                            </button>` 
+                        : ''}
                     </div>
                 </div>
                 `;
@@ -2960,7 +3065,19 @@
                                 }
 
                             } else if (field.isAction) {
-                                content = `<div class="flex space-x-2 justify-center items-center"><button onclick="window.startEdit('${r.id}')" class="text-blue-600 hover:text-blue-800 bg-blue-50 p-1 rounded" title="編輯"><i data-lucide="edit-2" class="w-4 h-4"></i></button><button onclick="window.handleDelete('${r.id}')" class="text-red-600 hover:text-red-800 bg-red-50 p-1 rounded" title="刪除整筆案件"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div>`;
+                                content = `<div class="flex space-x-2 justify-center items-center">
+                                    <button onclick="window.startEdit('${r.id}')" class="text-blue-600 hover:text-blue-800 bg-blue-50 p-1 rounded" title="編輯">
+                                        <i data-lucide="edit-2" class="w-4 h-4"></i>
+                                    </button>
+                                    <button onclick="window.handleDelete('${r.id}')" class="text-red-600 hover:text-red-800 bg-red-50 p-1 rounded" title="刪除整筆案件">
+                                        <i data-lucide="trash-2" class="w-4 h-4"></i>
+                                    </button>
+                                    ${((state.isAdmin || r.ownerUid === state.currentUserUid) && !state.isDemoMode) ? 
+                                        `<button onclick="window.forceDeleteCase('${r.id}')" class="text-red-700 hover:text-red-900 bg-red-100 p-1 rounded border border-red-300" title="強制刪除（管理員）">
+                                            <i data-lucide="zap" class="w-4 h-4"></i>
+                                        </button>` 
+                                    : ''}
+                                </div>`;
                             } else if (field.key === 'status') {
                                 content = `<span class="px-2 py-1 rounded text-xs ${statusLbl.color}">${statusLbl.text}</span>`;
                             } else if (field.key === 'repaidTerms') {
@@ -3443,9 +3560,15 @@
                     </div>
                 </header>
                 
-                <div class="mb-4 flex justify-end space-x-2">
+                <div class="mb-4 flex flex-wrap gap-2">
                     <button onclick="window.cleanupOrphanedCases()" class="px-4 py-2 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 flex items-center text-sm font-bold">
                         <i data-lucide="trash-2" class="w-4 h-4 mr-2"></i>清理無主案件
+                    </button>
+                    <button onclick="window.adminForceDelete()" class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center text-sm font-bold">
+                        <i data-lucide="zap" class="w-4 h-4 mr-2"></i>管理員強制刪除工具
+                    </button>
+                    <button onclick="window.repairDatabase()" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center text-sm font-bold">
+                        <i data-lucide="wrench" class="w-4 h-4 mr-2"></i>資料庫修復工具
                     </button>
                 </div>
                 
@@ -3496,12 +3619,14 @@
                     </table>
                 </div>
                 <div class="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-                    <h3 class="font-bold text-yellow-800 flex items-center"><i data-lucide="alert-triangle" class="w-4 h-4 mr-2"></i>注意事項</h3>
+                    <h3 class="font-bold text-yellow-800 flex items-center"><i data-lucide="alert-triangle" class="w-4 h-4 mr-2"></i>強制刪除工具注意事項</h3>
                     <ul class="text-sm text-yellow-700 mt-2 space-y-1">
-                        <li>• 刪除帳號會同時刪除該用戶的所有貸款記錄</li>
-                        <li>• 無法刪除自己的帳號</li>
+                        <li>• <strong>普通刪除</strong>：使用案件列表中的垃圾桶圖標，會檢查權限並正常刪除</li>
+                        <li>• <strong>強制刪除</strong>：使用案件列表中的閃電圖標（僅管理員可見），直接從資料庫移除，不檢查權限</li>
+                        <li>• <strong>管理員工具</strong>：在不知道案件ID時，可使用"管理員強制刪除工具"輸入案件ID刪除</li>
+                        <li>• <strong>資料庫修復</strong>：修復資料結構不完整的案件，刪除無效案件</li>
                         <li>• 刪除操作無法復原，請謹慎操作</li>
-                        <li>• 「清理無主案件」會刪除所有沒有對應用戶的案件</li>
+                        <li>• 強制刪除工具僅限管理員使用</li>
                     </ul>
                 </div>
             </div>`;
@@ -3950,7 +4075,7 @@
                     modalHtml += `<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 animate-fade-in backdrop-blur-sm"><div class="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col"><div class="p-4 flex justify-between items-center text-white shrink-0 bg-gradient-to-r from-blue-600 to-indigo-600"><h3 class="font-bold flex items-center"><i data-lucide="list" class="w-5 h-5 mr-2"></i> 案件列表</h3><button onclick="window.updateState({modalType: null})" class="hover:bg-white/20 p-1 rounded"><i data-lucide="x" class="w-5 h-5"></i></button></div><div class="p-0 overflow-y-auto flex-1"><table class="w-full text-left border-collapse"><thead class="bg-gray-50 text-gray-500 text-xs uppercase sticky top-0">${customHeaders}</thead><tbody class="divide-y divide-gray-100 text-sm">${filteredWithDisplayIds.map(r => { const calc = calculateDerivedData(r); const status = getStatusLabel(r.status); return customRowBuilder(r, calc, status); }).join('')}</tbody></table></div></div></div>`;
                 }
 
-                app.innerHTML = `<div class="flex h-screen bg-slate-100 font-sans text-gray-800"><div class="w-20 sm:w-64 bg-slate-900 text-white flex flex-col justify-between fixed h-full z-20 transition-all duration-300"><div><div class="p-6 flex items-center justify-center sm:justify-start border-b border-slate-700"><i data-lucide="wallet" class="w-8 h-8 text-emerald-400 mr-0 sm:mr-3"></i><span class="hidden sm:block text-xl font-bold tracking-wider">借貸管理</span></div><div class="px-6 py-4 flex items-center border-b border-slate-800 mb-2"><div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold mr-3 ${state.isDemoMode ? 'bg-amber-500' : 'bg-slate-700'}">${state.isDemoMode ? 'T' : (state.currentUser ? state.currentUser.substring(0, 2).toUpperCase() : 'U')}</div><div class="hidden sm:block"><p class="text-xs text-slate-400">${state.isDemoMode ? "試用模式" : "已登入"}</p><p class="text-sm font-bold text-white truncate w-32">${state.isDemoMode ? "訪客 (不儲存)" : state.currentUser}</p></div></div><nav class="mt-4 px-4 space-y-2"><button onclick="window.setActiveTab('dashboard')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab === 'dashboard' ? 'bg-emerald-600' : 'hover:bg-slate-800'}"><i data-lucide="layout-dashboard" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">營運報表</span></button><button onclick="window.setActiveTab('list')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab === 'list' ? 'bg-emerald-600' : 'hover:bg-slate-800'}"><i data-lucide="database" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">案件列表</span></button><button onclick="window.setActiveTab('repayment')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab === 'repayment' ? 'bg-emerald-600' : 'hover:bg-slate-800'}"><i data-lucide="banknote" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">還款輸入</span></button>${state.isAdmin && !state.isDemoMode ? `<button onclick="window.setActiveTab('admin')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab === 'admin' ? 'bg-emerald-600' : 'hover:bg-slate-800'}"><i data-lucide="users" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">用戶管理</span></button>` : ''}</nav></div><div class="p-4 border-t border-slate-700 space-y-2"><button onclick="window.handleLogout()" class="w-full flex items-center justify-center sm:justify-start p-3 rounded-lg text-slate-400 hover:bg-red-900/30 hover:text-red-400 transition-colors"><i data-lucide="log-out" class="w-5 h-5 mr-0 sm:mr-2"></i><span class="hidden sm:block font-medium">登出系統</span></button></div></div><div class="flex-1 ml-20 sm:ml-64 p-4 sm:p-8 overflow-x-hidden">${content}</div>${modalHtml}</div>`;
+                app.innerHTML = `<div class="flex h-screen bg-slate-100 font-sans text-gray-800"><div class="w-20 sm:w-64 bg-slate-900 text-white flex flex-col justify-between fixed h-full z-20 transition-all duration-300"><div><div class="p-6 flex items-center justify-center sm:justify-start border-b border-slate-700"><i data-lucide="wallet" class="w-8 h-8 text-emerald-400 mr-0 sm:mr-3"></i><span class="hidden sm:block text-xl font-bold tracking-wider">借貸管理</span></div><div class="px-6 py-4 flex items-center border-b border-slate-800 mb-2"><div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold mr-3 ${state.isDemoMode ? 'bg-amber-500' : 'bg-slate-700'}">${state.isDemoMode ? 'T' : (state.currentUser ? state.currentUser.substring(0, 2).toUpperCase() : 'U')}</div><div class="hidden sm:block"><p class="text-xs text-slate-400">${state.isDemoMode ? "試用模式" : "已登入"}</p><p class="text-sm font-bold text-white truncate w-32">${state.isDemoMode ? "訪客 (不儲存)" : state.currentUser}</p></div></div><nav class="mt-4 px-4 space-y-2"><button onclick="window.setActiveTab('dashboard')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab === 'dashboard' ? 'bg-emerald-600' : 'hover:bg-slate-800'}"><i data-lucide="layout-dashboard" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">營運報表</span></button><button onclick="window.setActiveTab('list')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab === 'list' ? 'bg-emerald-600' : 'hover:bg-slate-800'}"><i data-lucide="database" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">案件列表</span></button><button onclick="window.setActiveTab('repayment')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab === 'repayment' ? 'bg-emerald-600' : 'hover:bg-slate-800'}"><i data-lucide="banknote" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">還款輸入</span></button><button onclick="window.open('user_manual.html', '_blank')" class="w-full flex items-center p-3 rounded-lg transition-colors hover:bg-slate-800"><i data-lucide="book-open" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">使用手冊</span></button>${state.isAdmin && !state.isDemoMode ? `<button onclick="window.setActiveTab('admin')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab === 'admin' ? 'bg-emerald-600' : 'hover:bg-slate-800'}"><i data-lucide="users" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">用戶管理</span></button>` : ''}</nav></div><div class="p-4 border-t border-slate-700 space-y-2"><button onclick="window.handleLogout()" class="w-full flex items-center justify-center sm:justify-start p-3 rounded-lg text-slate-400 hover:bg-red-900/30 hover:text-red-400 transition-colors"><i data-lucide="log-out" class="w-5 h-5 mr-0 sm:mr-2"></i><span class="hidden sm:block font-medium">登出系統</span></button></div></div><div class="flex-1 ml-20 sm:ml-64 p-4 sm:p-8 overflow-x-hidden">${content}</div>${modalHtml}</div>`;
                 
                 if (state.activeTab === 'list') {
                     window.refreshListUI();
