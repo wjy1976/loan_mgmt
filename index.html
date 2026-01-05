@@ -529,7 +529,7 @@
             if (!isPaidThisMonth && record.lastRepaymentDate) { const lastDate = new Date(record.lastRepaymentDate); if (lastDate.getMonth() === currentMonth && lastDate.getFullYear() === currentYear) isPaidThisMonth = true; }
             if (record.status === '0') return { isPaid: true, isOverdue: false };
             let repayDay = null; if (record.repayDay) { const match = String(record.repayDay).match(/(\d+)/); if (match) repayDay = parseInt(match[1], 10); }
-            let isOverdue = false; if (!isPaidThisMonth && repayDay) { const currentDay = now.getDate(); if (currentDay > repayDay) isOverdue = true; }
+            let isOverdue = false; if (!isPaidThisMonth && repayDay) { const currentDay = now.getDate(); if (currentDay >= repayDay) isOverdue = true; }
             return { isPaid: isPaidThisMonth, isOverdue };
         };
 
@@ -694,11 +694,14 @@
 
         // --- Logic ---
         const updateState = (updates) => { 
-            // 記錄歷史記錄
+            // 記錄歷史記錄 - 修正：只記錄頁面切換，避免重複記錄
             if (updates.activeTab && updates.activeTab !== state.activeTab) {
-                state.history.push(state.activeTab);
-                if (state.history.length > 10) {
-                    state.history.shift();
+                // 確保不會重複記錄相同的頁面
+                if (state.history[state.history.length - 1] !== state.activeTab) {
+                    state.history.push(state.activeTab);
+                    if (state.history.length > 10) {
+                        state.history.shift();
+                    }
                 }
             }
             
@@ -706,15 +709,21 @@
             renderApp(); 
         };
 
-        // 新增：回到上一頁功能
+        // 修正：回到上一頁功能
         window.goBack = () => {
+            // 如果歷史記錄中有足夠的頁面（至少2個，包含當前頁面）
             if (state.history.length > 1) {
-                const previousTab = state.history.pop();
-                const currentTab = state.history[state.history.length - 1];
-                updateState({ activeTab: currentTab });
+                // 從歷史記錄中移除當前頁面
+                state.history.pop();
+                // 取得上一頁（現在歷史記錄的最後一個）
+                const previousTab = state.history[state.history.length - 1];
+                // 直接設定 activeTab，不要觸發歷史記錄
+                state.activeTab = previousTab;
+                renderApp();
             } else {
-                // 如果沒有歷史記錄，回到儀表板
-                updateState({ activeTab: 'dashboard' });
+                // 如果沒有足夠歷史，回到儀表板
+                state.activeTab = 'dashboard';
+                renderApp();
             }
         };
 
@@ -3315,7 +3324,7 @@
                         </div>
                         <p class="text-sm text-gray-500 mt-1">債權總額: 狀態1+3+5欠款總和 | 目前放款額: 狀態1+3+5借款金額總和</p>
                     </div>
-                    <!-- 新增：右上角回上一頁按鈕 -->
+                    <!-- 修正：右上角回上一頁按鈕 -->
                     <button onclick="window.goBack()" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors flex items-center text-sm font-medium">
                         <i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁
                     </button>
@@ -3428,7 +3437,7 @@
                         </button>
                         <h2 class="text-2xl font-bold text-gray-800">案件資料列表</h2>
                     </div>
-                    <!-- 新增：右上角回上一頁按鈕 -->
+                    <!-- 修正：右上角回上一頁按鈕 -->
                     <button onclick="window.goBack()" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors flex items-center text-sm font-medium">
                         <i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁
                     </button>
@@ -3562,7 +3571,7 @@
                             <p class="text-sm text-gray-500">僅管理員可見，設定誰可以使用「代管」功能，並管理用戶帳號。</p>
                         </div>
                     </div>
-                    <!-- 新增：右上角回上一頁按鈕 -->
+                    <!-- 修正：右上角回上一頁按鈕 -->
                     <button onclick="window.goBack()" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors flex items-center text-sm font-medium">
                         <i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁
                     </button>
@@ -3653,7 +3662,7 @@
                      </button>
                      <h3 class="font-bold text-gray-800 flex items-center"><i data-lucide="${isEdit ? 'edit-2' : 'plus'}" class="w-4 h-4 mr-2"></i> ${isEdit ? '編輯案件' : '新增案件'}</h3>
                  </div>
-                 <!-- 修改：右上角改為回上一頁按鈕 -->
+                 <!-- 修正：右上角回上一頁按鈕 -->
                  <button onclick="window.goBack()" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors flex items-center text-sm font-medium">
                      <i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁
                  </button>
@@ -3756,6 +3765,7 @@
                             <p class="text-blue-100 text-sm mt-1">選取案件連結後，輸入每期還款資訊</p>
                         </div>
                     </div>
+                    <!-- 修正：右上角回上一頁按鈕 -->
                     <button onclick="window.goBack()" class="px-4 py-2 bg-white/20 text-white rounded-lg hover:bg-white/30 transition-colors flex items-center text-sm font-medium"><i data-lucide="arrow-left" class="w-4 h-4 mr-1"></i>回上一頁</button>
                 </div>
                 <div class="p-8 space-y-6">
