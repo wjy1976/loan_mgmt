@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>借貸管理系統 (ver 2.026.0105) - 修復版</title>
+    <title>金融管理系統 (ver 2.026.0110)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Lucide Icons -->
@@ -2485,7 +2485,7 @@
             
             const link = document.createElement("a");
             link.setAttribute("href", url);
-            link.setAttribute("download", `借貸管理資料_垂直格式_${new Date().toISOString().split('T')[0]}.csv`);
+            link.setAttribute("download", 金融管理資料${new Date().toISOString().split('T')[0]}.csv`);
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
@@ -3556,7 +3556,7 @@
                         </button>
                         <div>
                             <h2 class="text-xl font-bold text-gray-800">案件資料列表</h2>
-                            <p class="text-sm text-gray-500 mt-1">管理所有借貸案件資料</p>
+                            <p class="text-sm text-gray-500 mt-1">管理所有金融案件資料</p>
                         </div>
                     </div>
                     
@@ -4484,7 +4484,7 @@
                         <div>
                             <div class="p-6 flex items-center justify-center sm:justify-start border-b border-slate-700">
                                 <i data-lucide="wallet" class="w-8 h-8 text-emerald-400 mr-0 sm:mr-3"></i>
-                                <span class="hidden sm:block text-xl font-bold tracking-wider">借貸管理</span>
+                                <span class="hidden sm:block text-xl font-bold tracking-wider">金融管理</span>
                             </div>
                             <div class="px-6 py-4 flex items-center border-b border-slate-800 mb-2">
                                 <div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold mr-3 ${state.isDemoMode ? 'bg-amber-500' : 'bg-slate-700'}">${state.isDemoMode ? 'T' : (state.currentUser ? state.currentUser.substring(0, 2).toUpperCase() : 'U')}</div>
