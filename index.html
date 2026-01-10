@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>金融管理系統 (ver 2.026.0110)</title>
+    <title>財務管理系統 (ver 2.026.0110) - 決定版</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Lucide Icons -->
@@ -714,35 +714,42 @@
         };
 
         // 修復：回到上一頁功能
-        window.goBack = () => {
-            console.log('點擊回上一頁按鈕');
-            console.log('當前頁面:', state.activeTab);
-            console.log('歷史記錄:', state.history);
-            
-            // 如果歷史記錄中有頁面
-            if (state.history.length > 0) {
-                // 從歷史記錄中取得上一頁
-                const previousTab = state.history.pop();
-                console.log('返回上一頁:', previousTab);
-                
-                // 重置相關狀態
-                state.searchTerm = '';
-                state.unpaidFilter = null;
-                state.statusFilter = null;
-                state.batchDeleteMode = false;
-                state.selectedCasesForBatch = [];
-                state.currentPage = 1;
-                
-                // 設定到上一頁，但不要觸發歷史記錄
-                state.activeTab = previousTab;
-                renderApp();
-            } else {
-                // 如果沒有歷史，回到儀表板
-                console.log('沒有歷史記錄，返回儀表板');
-                state.activeTab = 'dashboard';
-                renderApp();
-            }
-        };
+window.goBack = () => {
+    console.log('點擊回上一頁按鈕');
+    console.log('當前頁面:', state.activeTab);
+    console.log('歷史記錄:', state.history);
+    
+    // 如果歷史記錄中有頁面
+    if (state.history.length > 0) {
+        // 從歷史記錄中取得上一頁
+        const previousTab = state.history.pop();
+        console.log('返回上一頁:', previousTab);
+        
+        // **只重置必要的狀態**
+        // 如果上一頁是「列表頁」，保持搜尋條件
+        // 如果上一頁不是列表頁，才清空搜尋
+        if (previousTab !== 'list') {
+            state.searchTerm = '';
+            state.unpaidFilter = null;
+            state.statusFilter = null;
+        }
+        
+        // 批次刪除模式保持不變（讓使用者自己關閉）
+        // state.batchDeleteMode = false;  ← 刪除這行
+        // state.selectedCasesForBatch = []; ← 刪除這行
+        
+        state.currentPage = 1;
+        
+        // 設定到上一頁
+        state.activeTab = previousTab;
+        renderApp();
+    } else {
+        // 如果沒有歷史，回到儀表板
+        console.log('沒有歷史記錄，返回儀表板');
+        state.activeTab = 'dashboard';
+        renderApp();
+    }
+};
 
         // 新增：狀態篩選功能
         window.filterByStatus = (statusType) => {
@@ -1392,9 +1399,7 @@
             if (authEmail) authEmail.value = '';
             if (authConfirmPassword) authConfirmPassword.value = '';
             
-            if (typeof sessionStorage !== 'undefined') {
-                sessionStorage.removeItem('firebase:authUser:' + firebaseConfig.apiKey + ':' + appId);
-            }
+           
             
             window.showSuccess("已成功登出系統");
         };
@@ -1556,12 +1561,20 @@
         };
 
         // 新增：批次選擇相關功能
-        window.toggleBatchDeleteMode = () => {
-            updateState({ 
-                batchDeleteMode: !state.batchDeleteMode,
-                selectedCasesForBatch: [] 
-            });
-        };
+      window.toggleBatchDeleteMode = () => {
+    const willBeBatchMode = !state.batchDeleteMode;
+    const updates = { 
+        batchDeleteMode: willBeBatchMode
+    };
+    
+    // 只有當要「關閉」批次模式時才清空選擇
+    // 如果是要「開啟」批次模式，保留現有選擇（如果有）
+    if (!willBeBatchMode) {
+        updates.selectedCasesForBatch = [];
+    }
+    
+    updateState(updates);
+};
 
         window.toggleSelectCaseForBatch = (caseId) => {
             const index = state.selectedCasesForBatch.indexOf(caseId);
@@ -2485,7 +2498,7 @@
             
             const link = document.createElement("a");
             link.setAttribute("href", url);
-            link.setAttribute("download", 金融管理資料${new Date().toISOString().split('T')[0]}.csv`);
+            link.setAttribute("download", `財務管理資料_垂直格式_${new Date().toISOString().split('T')[0]}.csv`);
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
@@ -3276,47 +3289,63 @@
          };
 
         // 生成用戶視圖切換下拉選單的HTML - 修正：管理員顯示問題
-        const renderUserSwitcher = () => {
-            // 如果不是管理員或是demo模式，顯示簡單的用戶資訊
-            if (!state.isAdmin || state.isDemoMode) {
-                return `
-                <div class="flex items-center bg-gray-100 px-3 py-2 rounded-lg">
-                    <i data-lucide="user" class="w-4 h-4 text-gray-500 mr-2"></i>
-                    <span class="text-sm font-medium text-gray-700">
-                        ${state.isDemoMode ? '試用模式 (訪客)' : (state.currentUserName || '用戶')}
-                    </span>
-                </div>
-                `;
+       // 修改 renderUserSwitcher 函數
+const renderUserSwitcher = () => {
+    // 如果不是管理員或是 demo 模式，顯示簡單的用戶資訊
+    if (!state.isAdmin || state.isDemoMode) {
+        let displayText = '';
+        
+        if (state.isDemoMode) {
+            displayText = '試用模式 (訪客)';
+        } else if (state.currentUser) {
+            // 顯示用戶名稱，如果是 email 格式，提取前面的部分
+            if (state.currentUser.includes('@')) {
+                displayText = state.currentUser.split('@')[0];
+            } else {
+                displayText = state.currentUser;
             }
-            
-            // 管理員模式：顯示用戶視圖切換下拉選單
-            let options = '';
-            
-            // 獲取當前用戶的角色
-            const currentUser = state.usersDirectory.find(u => u.uid === state.currentUserUid);
-            const currentUserRole = currentUser ? currentUser.role : 'user';
-            
-            // 添加當前用戶選項，如果是管理員則標記 (Admin)
-            options += `<option value="${state.currentUserUid}" ${state.viewingUid === state.currentUserUid ? 'selected' : ''}>👤 自己的帳號 ${currentUserRole === 'admin' ? ' (Admin)' : ''}</option>`;
-            
-            // 添加其他用戶選項
-            state.usersDirectory.forEach(user => {
-                if (user.uid !== state.currentUserUid) {
-                    const isSelected = state.viewingUid === user.uid;
-                    const roleMark = user.role === 'admin' ? ' (Admin)' : '';
-                    options += `<option value="${user.uid}" ${isSelected ? 'selected' : ''}>${user.username}${roleMark} (${user.email})</option>`;
-                }
-            });
-            
-            return `
-            <div class="flex items-center space-x-2">
-                <span class="text-sm text-gray-600 font-medium">檢視模式:</span>
-                <select onchange="window.changeViewingUser(this.value)" class="bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none w-48">
-                    ${options}
-                </select>
-            </div>
-            `;
-        };
+        } else {
+            displayText = '用戶';
+        }
+        
+        return `
+        <div class="flex items-center bg-gray-100 px-3 py-2 rounded-lg">
+            <i data-lucide="user" class="w-4 h-4 text-gray-500 mr-2"></i>
+            <span class="text-sm font-medium text-gray-700">
+                ${displayText}
+            </span>
+        </div>
+        `;
+    }
+    
+    // 管理員模式：顯示用戶視圖切換下拉選單
+    let options = '';
+    
+    // 獲取當前用戶的角色
+    const currentUser = state.usersDirectory.find(u => u.uid === state.currentUserUid);
+    const currentUserRole = currentUser ? currentUser.role : 'user';
+    
+    // 添加當前用戶選項，如果是管理員則標記 (Admin)
+    options += `<option value="${state.currentUserUid}" ${state.viewingUid === state.currentUserUid ? 'selected' : ''}>👤 自己的帳號 ${currentUserRole === 'admin' ? ' (Admin)' : ''}</option>`;
+    
+    // 添加其他用戶選項
+    state.usersDirectory.forEach(user => {
+        if (user.uid !== state.currentUserUid) {
+            const isSelected = state.viewingUid === user.uid;
+            const roleMark = user.role === 'admin' ? ' (Admin)' : '';
+            options += `<option value="${user.uid}" ${isSelected ? 'selected' : ''}>${user.username}${roleMark} (${user.email})</option>`;
+        }
+    });
+    
+    return `
+    <div class="flex items-center space-x-2">
+        <span class="text-sm text-gray-600 font-medium">檢視模式:</span>
+        <select onchange="window.changeViewingUser(this.value)" class="bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none w-48">
+            ${options}
+        </select>
+    </div>
+    `;
+};
 
         // Render Functions
         function renderAuth() { 
@@ -3556,7 +3585,7 @@
                         </button>
                         <div>
                             <h2 class="text-xl font-bold text-gray-800">案件資料列表</h2>
-                            <p class="text-sm text-gray-500 mt-1">管理所有金融案件資料</p>
+                            <p class="text-sm text-gray-500 mt-1">管理所有借貸案件資料</p>
                         </div>
                     </div>
                     
@@ -4484,7 +4513,7 @@
                         <div>
                             <div class="p-6 flex items-center justify-center sm:justify-start border-b border-slate-700">
                                 <i data-lucide="wallet" class="w-8 h-8 text-emerald-400 mr-0 sm:mr-3"></i>
-                                <span class="hidden sm:block text-xl font-bold tracking-wider">金融管理</span>
+                                <span class="hidden sm:block text-xl font-bold tracking-wider">財務管理</span>
                             </div>
                             <div class="px-6 py-4 flex items-center border-b border-slate-800 mb-2">
                                 <div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold mr-3 ${state.isDemoMode ? 'bg-amber-500' : 'bg-slate-700'}">${state.isDemoMode ? 'T' : (state.currentUser ? state.currentUser.substring(0, 2).toUpperCase() : 'U')}</div>
