@@ -215,8 +215,357 @@
             .mobile-batch-select-card {
                 position: relative;
                 padding-left: 2.5rem;
+                                        
             }
+        
+        /* 在現有的 @media (max-width: 768px) 區域內，添加或修改以下樣式 */
+
+/* 手機版通用字體調整 */
+@media (max-width: 768px) {
+    body {
+        font-size: 16px; /* 基礎字體放大 */
+    }
+    
+    /* 整體容器優化 */
+    #app {
+        padding-top: 0.5rem;
+    }
+    
+    /* 卡片字體全面放大 */
+    .mobile-case-card {
+        padding: 1.25rem;
+        margin-bottom: 1.25rem;
+        border-radius: 1rem;
+    }
+    
+    .mobile-case-id {
+        font-size: 1.1rem;
+        font-weight: 700;
+    }
+    
+    .mobile-borrower-name {
+        font-size: 1.3rem !important; /* 借款人姓名放大 */
+        line-height: 1.4;
+        margin-top: 0.5rem;
+        margin-bottom: 0.5rem;
+    }
+    
+    .mobile-status-badge {
+        font-size: 0.85rem;
+        padding: 0.35rem 0.75rem;
+        border-radius: 0.75rem;
+    }
+    
+    .mobile-payment-status {
+        font-size: 0.85rem;
+        padding: 0.35rem 0.75rem;
+        border-radius: 0.75rem;
+        margin-top: 0.5rem;
+    }
+    
+    /* 詳細資訊網格優化 */
+    .mobile-case-details {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 1rem;
+        margin: 1.25rem 0;
+    }
+    
+    .mobile-detail-label {
+        font-size: 0.85rem;
+        color: #666;
+        margin-bottom: 0.35rem;
+        font-weight: 500;
+    }
+    
+    .mobile-detail-value {
+        font-size: 1.05rem !important; /* 數值放大 */
+        font-weight: 600;
+        color: #222;
+        line-height: 1.4;
+    }
+    
+    /* 金額特別強調 */
+    .mobile-detail-value:contains('$') {
+        font-size: 1.15rem !important;
+        font-weight: 700;
+    }
+    
+    /* 金額顏色強化 */
+    .mobile-detail-value.text-red-600,
+    .mobile-detail-value.text-purple-600 {
+        font-size: 1.15rem !important;
+        font-weight: 700;
+    }
+    
+    /* 操作按鈕優化 */
+    .mobile-case-actions {
+        padding-top: 1rem;
+        border-top: 2px solid #f0f0f0;
+        gap: 0.5rem;
+    }
+    
+    .mobile-action-button {
+        padding: 0.75rem 0.5rem;
+        border-radius: 0.75rem;
+        font-size: 0.9rem;
+        min-width: 0;
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+    }
+    
+    /* 搜尋區域優化 */
+    .mobile-search-container {
+        padding: 0.75rem;
+        background: white;
+        border-radius: 1rem;
+        margin-bottom: 1rem;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    
+    .mobile-search-container input {
+        height: 3rem;
+        font-size: 1rem;
+        border-radius: 0.75rem;
+        padding: 0 1rem;
+    }
+    
+    /* 批次選擇卡片優化 */
+    .mobile-batch-select-card {
+        padding-left: 3rem;
+    }
+    
+    .mobile-batch-select {
+        top: 0.75rem;
+        left: 0.75rem;
+    }
+    
+    .mobile-batch-select input[type="checkbox"] {
+        width: 1.5rem;
+        height: 1.5rem;
+    }
+    
+    /* 新增按鈕優化 */
+    .mobile-button {
+        padding: 0.75rem 1rem;
+        font-size: 1rem;
+        border-radius: 0.75rem;
+        font-weight: 600;
+    }
+    
+    /* 狀態篩選按鈕優化 */
+    button.bg-red-600,
+    button.bg-blue-600,
+    button.bg-emerald-600,
+    button.bg-gray-500 {
+        padding: 0.75rem 1rem !important;
+        font-size: 0.95rem !important;
+        border-radius: 0.75rem;
+        height: 3rem;
+    }
+    
+    /* 分頁控制優化 */
+    #paginationInfo {
+        font-size: 0.9rem;
+        font-weight: 500;
+    }
+    
+    #pageInput {
+        height: 2.5rem;
+        width: 4rem;
+        font-size: 1rem;
+        text-align: center;
+    }
+    
+    #pageGoBtn {
+        height: 2.5rem;
+        padding: 0 1rem;
+        font-size: 0.9rem;
+    }
+    
+    /* 側邊欄隱藏優化 */
+    .w-20.sm\\:w-64 {
+        display: none; /* 手機隱藏側邊欄 */
+    }
+    
+    .flex.h-screen {
+        flex-direction: column;
+    }
+    
+    /* 頂部導航優化 */
+    .bg-white.border-b.border-gray-200.p-4 {
+        padding: 1rem;
+        flex-wrap: wrap;
+    }
+    
+    .bg-white.border-b.border-gray-200.p-4 h2 {
+        font-size: 1.4rem;
+        margin-bottom: 0.25rem;
+    }
+    
+    .bg-white.border-b.border-gray-200.p-4 p {
+        font-size: 0.95rem;
+    }
+    
+    /* 回上一頁按鈕優化 */
+    button[onclick*="goBack"] {
+        min-width: 3rem;
+        min-height: 3rem;
+        margin-right: 0.5rem;
+    }
+    
+    /* 儀表板卡片優化 */
+    .grid.grid-cols-1.lg\\:grid-cols-4.gap-3 {
+        padding: 0.5rem;
+    }
+    
+    .bg-emerald-100,
+    .bg-blue-100,
+    .bg-red-200,
+    .bg-gray-200,
+    .bg-purple-100 {
+        padding: 1.25rem;
+        margin-bottom: 0.75rem;
+    }
+    
+    .bg-emerald-100 span.text-2xl,
+    .bg-blue-100 span.text-2xl,
+    .bg-red-200 span.text-2xl {
+        font-size: 2rem !important;
+        line-height: 1.2;
+    }
+    
+    /* 還款入帳頁面優化 */
+    .max-w-2xl.mx-auto {
+        padding: 0.5rem;
+    }
+    
+    .p-8.space-y-6 {
+        padding: 1.5rem;
+    }
+    
+    .p-8.space-y-6 label {
+        font-size: 1.05rem;
+        font-weight: 600;
+    }
+    
+    input[type="date"],
+    input[type="number"],
+    select {
+        height: 3rem;
+        font-size: 1.05rem;
+        padding: 0 1rem;
+    }
+    
+    /* 表單頁面優化 */
+    .max-w-5xl.mx-auto {
+        padding: 0.5rem;
+    }
+    
+    .p-4.grid.grid-cols-1 {
+        padding: 1rem;
+    }
+    
+    input[type="text"],
+    input[type="number"],
+    textarea,
+    select {
+        height: 2.75rem;
+        font-size: 1rem;
+        padding: 0 0.75rem;
+    }
+    
+    textarea {
+        min-height: 4rem;
+        padding: 0.75rem;
+    }
+    
+    /* 按鈕間距優化 */
+    .flex.space-x-2 {
+        gap: 0.5rem;
+    }
+    
+    /* 彈出視窗優化 */
+    .fixed.inset-0.bg-black\\/50 .bg-white.rounded-xl {
+        margin: 0.5rem;
+        max-height: 90vh;
+    }
+    
+    .fixed.inset-0.bg-black\\/50 .bg-white.rounded-xl h3 {
+        font-size: 1.3rem;
+    }
+    
+    /* 修正文字截斷問題 */
+    .truncate {
+        overflow: visible;
+        white-space: normal;
+    }
+    
+    /* 滾動條優化 */
+    .custom-scrollbar::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+    
+    /* 強調重要數字 */
+    .font-bold.text-red-600,
+    .font-bold.text-emerald-600,
+    .font-bold.text-blue-600 {
+        font-size: 1.1rem;
+    }
+    
+    /* 調整篩選按鈕組 */
+    .flex.space-x-2.items-center {
+        flex-wrap: wrap;
+        row-gap: 0.5rem;
+    }
+    
+    /* 批次刪除面板優化 */
+    .bg-red-50.border.border-red-200.rounded-lg.p-4 {
+        padding: 1rem;
+    }
+    
+    .bg-red-50.border.border-red-200.rounded-lg.p-4 h3 {
+        font-size: 1.1rem;
+    }
+    
+    .bg-red-50.border.border-red-200.rounded-lg.p-4 button {
+        padding: 0.75rem 1rem;
+        font-size: 0.95rem;
+    }
+}
+
+/* 超小手機優化 (寬度小於400px) */
+@media (max-width: 400px) {
+    .mobile-case-details {
+        grid-template-columns: 1fr;
+        gap: 0.75rem;
+    }
+    
+    .mobile-action-button {
+        padding: 0.6rem 0.4rem;
+        font-size: 0.85rem;
+    }
+    
+    .mobile-borrower-name {
+        font-size: 1.2rem !important;
+    }
+    
+    .mobile-detail-value {
+        font-size: 1rem !important;
+    }
+    
+    button.bg-red-600,
+    button.bg-blue-600 {
+        font-size: 0.85rem !important;
+        padding: 0.6rem 0.8rem !important;
+    }
+}    
+        
         }
+
         
         @media (min-width: 769px) {
             /* 桌面版顯示表格，隱藏手機版卡片 */
@@ -554,7 +903,46 @@
                 return { date, principal, interest, raw };
             }).filter(item => item.date !== null);
         };
-
+// 新增：清理表單資料函數
+const cleanFormDataForSave = (data) => {
+    const cleaned = { ...data };
+    
+    // 移除不必要的欄位
+    delete cleaned._firebaseId;
+    delete cleaned.displayId; // 這是計算欄位，不應儲存
+    
+    // 確保數字欄位是數字或空字串
+    const numericFields = [
+        'loanAmount', 'disbursed', 'interestRate', 'specialRate', 'terms',
+        'principalPerTerm', 'interestPerTerm', 'negotiationPrincipal',
+        'repaidTerms', 'totalInterestIncome', 'arrears', 'outstanding',
+        'totalPrincipalPaid'
+    ];
+    
+    numericFields.forEach(field => {
+        if (cleaned[field] !== undefined && cleaned[field] !== null && cleaned[field] !== '') {
+            cleaned[field] = Number(cleaned[field]) || 0;
+        } else {
+            cleaned[field] = 0;
+        }
+    });
+    
+    // 確保字串欄位是字串
+    const stringFields = [
+        'borrower', 'job', 'idNumber', 'address', 'telephone', 'mobile',
+        'agent', 'repayDay', 'note', 'method', 'status', 'date'
+    ];
+    
+    stringFields.forEach(field => {
+        if (cleaned[field] === undefined || cleaned[field] === null) {
+            cleaned[field] = '';
+        } else {
+            cleaned[field] = String(cleaned[field]);
+        }
+    });
+    
+    return cleaned;
+};
         // 修正：外在本金計算公式，確保最小值為0
         const calculateDerivedData = (record) => {
             const loanAmount = Number(record.loanAmount) || 0; 
@@ -761,36 +1149,55 @@ window.goBack = () => {
             window.refreshListUI();
         };
 
-        // 修正：複製案件功能 - 修正ID處理問題
-        window.duplicateCase = () => {
-            // 複製當前表單資料
-            const originalFormData = { ...formData };
-            
-            // 創建複製的資料，清空案件編號和ID
-            const duplicatedData = {
-                ...originalFormData,
-                id: '', // 修正：清空ID，確保儲存時視為新案件
-                caseNumber: '', // 清空案件編號
-                displayId: '', // 清空顯示編號
-                schedule: '', // 清空還款日程（新案件應該從頭開始）
-                lastRepaymentDate: '', // 清空最後還款日期
-                repaidTerms: 0, // 重置還款期數
-                totalInterestIncome: 0, // 重置利息收入
-                note: originalFormData.note ? `${originalFormData.note} (複製)` : '複製案件' // 在備註中標記
-            };
-            
-            // 更新表單資料
-            formData = duplicatedData;
-            
-            // 清空編輯記錄，變成新增案件模式
-            state.editingRecord = null;
-            
-            // 顯示成功訊息
-            window.showSuccess("已複製案件資料，請修改必要資訊後儲存為新案件");
-            
-            // 重新渲染表單
-            renderApp();
-        };
+       // 修正：複製案件功能 - 確保正確複製原始案件資料
+window.duplicateCase = () => {
+    // 檢查是否正在編輯案件
+    if (!state.editingRecord) {
+        window.showError("請先選擇要複製的案件");
+        return;
+    }
+    
+    // 從 state.records 取得原始案件的完整資料（而非 formData）
+    const originalRecord = state.records.find(r => r.id === state.editingRecord.id);
+    
+    if (!originalRecord) {
+        window.showError("找不到原始案件資料");
+        return;
+    }
+    
+    console.log("原始案件資料:", originalRecord);
+    
+    // 創建複製的資料
+    const duplicatedData = {
+        ...originalRecord,
+        id: '', // 清空ID，確保儲存時視為新案件
+        caseNumber: '', // 清空案件編號
+        displayId: '', // 清空顯示編號
+        schedule: '', // 清空還款日程（新案件應該從頭開始）
+        lastRepaymentDate: '', // 清空最後還款日期
+        repaidTerms: 0, // 重置還款期數
+        totalInterestIncome: 0, // 重置利息收入
+        totalPrincipalPaid: 0, // 重置本金收入
+        note: originalRecord.note ? `${originalRecord.note} (複製於 ${new Date().toLocaleDateString()})` : `複製案件 (${new Date().toLocaleDateString()})`,
+        createdAt: new Date().toISOString(), // 新創建時間
+        updatedAt: new Date().toISOString() // 新更新時間
+    };
+    
+    // 移除不需要的計算欄位
+    delete duplicatedData.displayId;
+    
+    // 更新表單資料
+    formData = { ...duplicatedData };
+    
+    // 清空編輯記錄，變成新增案件模式
+    state.editingRecord = null;
+    
+    // 顯示成功訊息
+    window.showSuccess("已複製案件資料，請修改必要資訊後儲存為新案件");
+    
+    // 重新渲染表單
+    renderApp();
+};
 
         // 新增：保存卡片布局到 Firebase
         const saveCardLayoutToFirebase = async (layout) => {
@@ -1405,7 +1812,20 @@ window.goBack = () => {
         };
         
         window.openNewForm = () => { formData = { ...initialFormState }; updateState({ editingRecord: null, activeTab: 'form' }); };
-        window.startEdit = (id) => { const record = state.records.find(r => r.id === id); if (record) { formData = { ...record }; updateState({ editingRecord: record, activeTab: 'form' }); } };
+        window.startEdit = (id) => { 
+    console.log("開始編輯案件，ID:", id);
+    const record = state.records.find(r => r.id === id); 
+    if (record) { 
+        // **深拷貝記錄，避免參考汙染**
+        const recordCopy = JSON.parse(JSON.stringify(record));
+        formData = { ...recordCopy };
+        console.log("載入的表單資料:", formData);
+        updateState({ editingRecord: recordCopy, activeTab: 'form' }); 
+    } else {
+        console.error("找不到要編輯的案件，ID:", id);
+        window.showError("找不到要編輯的案件");
+    }
+};
         
         window.handleSearch = (val) => { state.searchTerm = val; state.currentPage = 1; state.unpaidFilter = null; state.statusFilter = null; window.refreshListUI(); };
         window.changePage = (delta) => { state.currentPage += delta; window.refreshListUI(); };
@@ -1855,12 +2275,23 @@ window.goBack = () => {
                 window.showError("協商案件必須設定協商本金（每期還款金額）。");
                 return;
             }
-            
-            const dataToSave = { ...formData, updatedAt: serverTimestamp() }; 
+                // ========== 新增：檢查協商本金 ==========
+    if (formData.status === '5' && (!formData.negotiationPrincipal || Number(formData.negotiationPrincipal) <= 0)) {
+        window.showError("協商案件必須設定協商本金（每期還款金額）。");
+        return;
+    }
+               // =====================================
+            const dataToSave = { ...cleanFormDataForSave(formData), updatedAt: serverTimestamp() }; 
             
             // 修正：檢查是否有ID，如果沒有ID就是新增案件
             const isNewCase = !formData.id || formData.id === '';
             
+    // ========== 新增：清理新案件的ID ==========
+    if (isNewCase) {
+        delete dataToSave.id; // 確保 Firebase 生成新 ID
+    }
+    // ========================================
+
             if (state.isDemoMode) { 
                 if (isNewCase) { 
                     const newRec = { 
@@ -1897,33 +2328,96 @@ window.goBack = () => {
         };
         
         // 修正：刪除功能
-        window.handleDelete = (id) => {
-            window.showConfirm("確定要永久刪除此案件嗎？此操作無法復原。", async (confirmed) => {
-                if (!confirmed) return;
-                
-                const recordToDelete = state.records.find(r => r.id === id);
-                if (!recordToDelete) {
-                    window.showError("找不到要刪除的案件");
+window.handleDelete = (id) => {
+      console.log("=== 開始刪除案件 ===");
+    console.log("案件ID:", id);
+    console.log("當前記錄數量:", state.records.length);
+          window.showConfirm("確定要永久刪除此案件嗎？此操作無法復原。", async (confirmed) => {
+        if (!confirmed) return;
+        
+        const recordToDelete = state.records.find(r => r.id === id);
+        if (!recordToDelete) {
+            window.showError("找不到要刪除的案件");
+            return;
+        }
+        
+        console.log("嘗試刪除案件:", {
+            id: id,
+            借款人: recordToDelete.borrower,
+            ownerUid: recordToDelete.ownerUid
+        });
+        
+        // 新增：檢查ID是否有效
+        if (!id || id === '' || id.includes(' ') || id.includes('/') || id.includes('.')) {
+            window.showError(`案件ID格式無效，無法刪除。ID: "${id}"`);
+            
+            // 詢問是否從本地狀態移除
+            if (confirm("這個案件的ID格式錯誤，無法從資料庫刪除。要從本地狀態中移除嗎？")) {
+                state.records = state.records.filter(r => r.id !== id);
+                renderApp();
+                window.showSuccess("已從本地狀態中移除無效案件");
+            }
+            return;
+        }
+        
+        if (state.isDemoMode) {
+            // 刪除案件
+            state.records = state.records.filter(r => r.id !== id);
+            
+            renderApp();
+            window.showSuccess("案件已成功刪除。");
+        } else if (firebaseAvailable) {
+            try {
+                // 檢查權限
+                if (recordToDelete.ownerUid !== state.currentUserUid && !state.isAdmin) {
+                    window.showError("您沒有權限刪除此案件");
                     return;
                 }
                 
-                if (state.isDemoMode) {
-                    // 刪除案件
+                showLoading(true, "正在刪除案件...");
+                
+                // 使用更安全的路徑建立方式
+                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'loan_records', id);
+                console.log("刪除路徑:", docRef.path);
+                
+                await deleteDoc(docRef);
+                
+                // 從本地狀態刪除
+                state.records = state.records.filter(r => r.id !== id);
+                
+                showLoading(false);
+                window.showSuccess("案件已成功刪除。");
+                renderApp();
+                
+            } catch (e) {
+                showLoading(false);
+                console.error("刪除失敗:", e);
+                
+                // 更具體的錯誤訊息
+                if (e.code === 'permission-denied') {
+                    window.showError("刪除失敗：權限不足");
+                } else if (e.code === 'not-found') {
+                    window.showError("刪除失敗：案件不存在於資料庫中");
+                    // 嘗試從本地狀態移除
                     state.records = state.records.filter(r => r.id !== id);
-                    
+                    window.showSuccess("已從本地狀態移除無效案件");
                     renderApp();
-                    window.showSuccess("案件已成功刪除。");
-                } else if (firebaseAvailable) {
-                    try {
-                        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'loan_records', id));
-                        window.showSuccess("案件已成功刪除。");
-                    } catch (e) {
-                        console.error("刪除失敗:", e);
-                        window.showError("刪除失敗，請檢查權限或連線。");
+                } else if (e.message.includes('even number of segments')) {
+                    window.showError(`刪除失敗：案件ID格式錯誤。ID: "${id}"`);
+                    
+                    // 提供修復選項
+                    if (confirm("這個案件的ID格式錯誤。要從本地狀態中移除嗎？")) {
+                        state.records = state.records.filter(r => r.id !== id);
+                        renderApp();
+                        window.showSuccess("已從本地狀態中移除格式錯誤的案件");
                     }
+                } else {
+                    window.showError(`刪除失敗: ${e.message}`);
                 }
-            });
-        };
+            }
+        }
+    });
+};
         
         // Admin Functions
         window.toggleUserStatus2Permission = async (uid) => {
@@ -2112,16 +2606,29 @@ window.goBack = () => {
         };
 
         window.updateRepaymentInput = (key, val) => { state[key] = val; };
-        window.updateRepaymentSearch = (val) => { 
-            state.repaymentSearchTerm = val; 
-            state.selectedRepaymentId = ''; 
-            
-            let repaymentCases = state.records.filter(r => {
-                if (r.status === '1') return true;
-                if (r.status === '2' && state.allowedStatus.includes('2')) return true;
-                if (r.status === '5') return true;
-                return false;
-            });
+       window.updateRepaymentSearch = (val) => { 
+    state.repaymentSearchTerm = val; 
+    state.selectedRepaymentId = ''; 
+    
+    let repaymentCases = state.records.filter(r => {
+        // 首先檢查案件是否屬於當前用戶
+        if (state.isDemoMode) {
+            // 試用模式只顯示 demo 資料
+            if (r.ownerUid !== 'demo') return false;
+        } else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
+            // 管理員查看特定用戶時，只顯示該用戶的案件
+            if (r.ownerUid !== state.viewingUid) return false;
+        } else if (!state.isAdmin) {
+            // 一般用戶只顯示自己的案件
+            if (r.ownerUid !== state.currentUserUid) return false;
+        }
+        
+        // 然後根據狀態過濾
+        if (r.status === '1') return true;
+        if (r.status === '2' && state.allowedStatus.includes('2')) return true;
+        if (r.status === '5') return true;
+        return false;
+    });
             
             // 在 demo 模式下，只顯示 demo 資料
             if (state.isDemoMode) {
@@ -3931,17 +4438,25 @@ const renderUserSwitcher = () => {
         }
 
         function renderRepayment() { 
-            let repaymentCases = state.records.filter(r => {
-                if (r.status === '1') return true;
-                if (r.status === '2' && state.allowedStatus.includes('2')) return true;
-                if (r.status === '5') return true;
-                return false;
-            });
-            
-            // 在 demo 模式下，只顯示 demo 資料
-            if (state.isDemoMode) {
-                repaymentCases = repaymentCases.filter(r => r.ownerUid === 'demo');
-            }
+    let repaymentCases = state.records.filter(r => {
+        // 首先檢查案件是否屬於當前用戶
+        if (state.isDemoMode) {
+            // 試用模式只顯示 demo 資料
+            if (r.ownerUid !== 'demo') return false;
+        } else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
+            // 管理員查看特定用戶時，只顯示該用戶的案件
+            if (r.ownerUid !== state.viewingUid) return false;
+        } else if (!state.isAdmin) {
+            // 一般用戶只顯示自己的案件
+            if (r.ownerUid !== state.currentUserUid) return false;
+        }
+        
+        // 然後根據狀態過濾
+        if (r.status === '1') return true;
+        if (r.status === '2' && state.allowedStatus.includes('2')) return true;
+        if (r.status === '5') return true;
+        return false;
+    });
             
             const isSearching = !!state.repaymentSearchTerm; 
             const dropdownDisplayClass = isSearching ? '' : 'hidden'; 
