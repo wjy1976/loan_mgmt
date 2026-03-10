@@ -4319,8 +4319,8 @@ const renderUserSwitcher = () => {
                         customRowBuilder = (r, calc, status) => {
                             // 計算應付(給委託人)
                             const loan = Number(r.loanAmount) || 0;
-                            const specialRate = Number(r.specialRate) || 0;
-                            const interestRate = Number(r.interestRate) || 0;
+                            const specialRate = Number(r.specialRate)/100 || 0;
+                            const interestRate = Number(r.interestRate)/100 || 0;
                             const terms = Number(r.terms) || 0;
                             let expectedPayment = 0;
                             if (r.method === '叨簿子') {
@@ -4444,6 +4444,83 @@ const renderUserSwitcher = () => {
                             </tr>`;
                         };
                     }
+                    
+                    // ============ 在這裡添加協商案件處理 ============
+// 新增：協商中（狀態5）的彈出視窗
+else if (state.modalType === 'negotiation') {
+    customHeaders = `<tr>
+        <th class="p-2">借款人</th>
+        <th class="p-2 text-right">協商本金 (每期)</th>
+        <th class="p-2 text-center">本月繳款狀態</th>
+        <th class="p-2 text-center">狀態</th>
+        <th class="p-2 text-center">操作</th>
+    </tr>`;
+    customRowBuilder = (r, calc, status) => {
+        const { isPaid, isOverdue } = getPaymentStatus(r);
+        let paymentStatusHtml = '';
+        if (isPaid) {
+            paymentStatusHtml = `<span class="text-emerald-600 font-bold text-xs"><i data-lucide="check" class="w-3 h-3 inline"></i>已繳清</span>`;
+        } else if (isOverdue) {
+            paymentStatusHtml = `<span class="text-red-600 font-bold text-xs"><i data-lucide="alert-triangle" class="w-3 h-3 inline"></i>逾期</span>`;
+        } else {
+            paymentStatusHtml = `<span class="text-gray-500 font-bold text-xs">未繳</span>`;
+        }
+        return `<tr class="hover:bg-gray-50 transition-colors">
+            <td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId || r.caseNumber || ''})</span></td>
+            <td class="p-2 text-right font-mono font-bold text-purple-600">${formatNumber(r.negotiationPrincipal || 0)}</td>
+            <td class="p-2 text-center">
+                <button onclick="window.handleRepaymentSelect('${r.id}'); window.updateState({modalType: null, activeTab: 'repayment'});" class="text-blue-600 hover:underline text-xs">
+                    ${paymentStatusHtml}
+                </button>
+            </td>
+            <td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td>
+            <td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td>
+        </tr>`;
+    };
+}
+
+// ============ 在這裡添加本期逾期案件處理 ============
+// 新增：本期逾期（unpaid）的彈出視窗
+else if (state.modalType === 'unpaid') {
+    customHeaders = `<tr>
+        <th class="p-2">借款人</th>
+        <th class="p-2 text-right">每期應繳</th>
+        <th class="p-2 text-center">本月繳款狀態</th>
+        <th class="p-2 text-center">狀態</th>
+        <th class="p-2 text-center">操作</th>
+    </tr>`;
+    customRowBuilder = (r, calc, status) => {
+        let termAmount = 0;
+        if (r.status === '5') {
+            termAmount = Number(r.negotiationPrincipal) || 0;
+        } else {
+            termAmount = (Number(r.principalPerTerm) || 0) + (Number(r.interestPerTerm) || 0);
+        }
+        const { isPaid, isOverdue } = getPaymentStatus(r);
+        let paymentStatusHtml = '';
+        if (isPaid) {
+            paymentStatusHtml = `<span class="text-emerald-600 font-bold text-xs"><i data-lucide="check" class="w-3 h-3 inline"></i>已繳清</span>`;
+        } else if (isOverdue) {
+            paymentStatusHtml = `<span class="text-red-600 font-bold text-xs"><i data-lucide="alert-triangle" class="w-3 h-3 inline"></i>逾期</span>`;
+        } else {
+            paymentStatusHtml = `<span class="text-gray-500 font-bold text-xs">未繳</span>`;
+        }
+        return `<tr class="hover:bg-gray-50 transition-colors">
+            <td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId || r.caseNumber || ''})</span></td>
+            <td class="p-2 text-right font-mono font-bold text-red-600">${formatNumber(termAmount)}</td>
+            <td class="p-2 text-center">
+                <button onclick="window.handleRepaymentSelect('${r.id}'); window.updateState({modalType: null, activeTab: 'repayment'});" class="text-blue-600 hover:underline text-xs">
+                    ${paymentStatusHtml}
+                </button>
+            </td>
+            <td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td>
+            <td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td>
+        </tr>`;
+    };
+}
+// ============ 插入結束 ============
+                    
+                                        
                     else {
                         customHeaders = `<tr><th class="p-2">借款人</th><th class="p-2 text-right">欠款</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr>`;
                         customRowBuilder = (r, calc, status) => `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId || r.caseNumber || ''})</span></td><td class="p-2 text-right text-red-600 font-mono">${formatNumber(calc.arrears)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td><td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td></tr>`;
