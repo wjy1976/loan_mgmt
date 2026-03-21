@@ -10,6 +10,8 @@
     <script src="https://unpkg.com/lucide@latest"></script>
     <!-- Google Font -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+    <!-- ECharts CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
     
     <style>
         /* 原有的樣式保持不變 */
@@ -451,7 +453,11 @@
             statusFilter: null,
             
             // 新增：防止 demo 模式被重置的標誌
-            demoModeLocked: !firebaseAvailable
+            demoModeLocked: !firebaseAvailable,
+            
+            // 新增：趨勢圖模態框控制
+            showTrendModal: false,
+            trendView: 'month' // 'month' 或 'year'
         };
 
         // Demo Data
@@ -3229,7 +3235,7 @@ window.handleDelete = (id) => {
                 const currentRecords = filteredWithDisplayIds.slice((state.currentPage - 1) * state.itemsPerPage, state.currentPage * state.itemsPerPage);
                 
                 if (filteredWithDisplayIds.length === 0) {
-                    tbody.innerHTML = `<tr><td colspan="${state.batchDeleteMode ? listFieldDefinitions.length + 1 : listFieldDefinitions.length}" class="p-8 text-center text-gray-400">目前無資料，請點擊新增案件</td></tr>`;
+                    tbody.innerHTML = `病人<td colspan="${state.batchDeleteMode ? listFieldDefinitions.length + 1 : listFieldDefinitions.length}" class="p-8 text-center text-gray-400">目前無資料，請點擊新增案件</td> </tr>`;
                 } else {
                     tbody.innerHTML = currentRecords.map(r => {
                         const { isPaid, isOverdue } = getPaymentStatus(r);
@@ -3253,7 +3259,7 @@ window.handleDelete = (id) => {
                         const batchSelectCell = state.batchDeleteMode ? 
                             `<td class="py-2 px-2 text-center select-checkbox" style="min-width: 40px; max-width: 40px; position: sticky; left: 0; z: 20; background-color: white; border-right: 1px solid #e5e7eb;">
                                 <input type="checkbox" ${state.selectedCasesForBatch.includes(r.id) ? 'checked' : ''} onclick="window.toggleSelectCaseForBatch('${r.id}')" class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-                            </td>` : '';
+                              </td>` : '';
 
                         const regularCells = listFieldDefinitions.map((field, idx) => {
                             let content = '';
@@ -3505,6 +3511,254 @@ const renderUserSwitcher = () => {
     `;
 };
 
+        // ================== 新增：淨收入趨勢圖功能 ==================
+        // 計算趨勢數據（月/年）
+        const computeIncomeTrend = () => {
+            // 獲取當前用戶的案件
+            let targetRecords = state.records;
+            if (state.isDemoMode) {
+                targetRecords = state.records.filter(r => r.ownerUid === 'demo');
+            } else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
+                targetRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
+            } else if (!state.isAdmin && !state.isDemoMode) {
+                targetRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
+            }
+
+            // 收集所有還款日程中的利息收入
+            const monthlyMap = new Map(); // key: "YYYY-MM", value: 總利息
+            const yearlyMap = new Map();   // key: "YYYY", value: 總利息
+
+            targetRecords.forEach(record => {
+                const entries = parseSchedule(record.schedule || '');
+                entries.forEach(entry => {
+                    if (entry.date && entry.interest > 0) {
+                        const year = entry.date.getFullYear();
+                        const month = entry.date.getMonth() + 1;
+                        const monthKey = `${year}-${String(month).padStart(2, '0')}`;
+                        const yearKey = `${year}`;
+                        monthlyMap.set(monthKey, (monthlyMap.get(monthKey) || 0) + entry.interest);
+                        yearlyMap.set(yearKey, (yearlyMap.get(yearKey) || 0) + entry.interest);
+                    }
+                });
+            });
+
+            // 排序月份和年份
+            const months = Array.from(monthlyMap.keys()).sort();
+            const monthData = months.map(m => monthlyMap.get(m));
+            
+            const years = Array.from(yearlyMap.keys()).sort();
+            const yearData = years.map(y => yearlyMap.get(y));
+
+            return { months, monthData, years, yearData };
+        };
+
+        // 獲取指定時間段的收入明細 (案件清單)
+        const getIncomeDetailForPeriod = (period, isMonth) => {
+            // 獲取當前用戶的案件（與趨勢圖數據源一致）
+            let targetRecords = state.records;
+            if (state.isDemoMode) {
+                targetRecords = state.records.filter(r => r.ownerUid === 'demo');
+            } else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
+                targetRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
+            } else if (!state.isAdmin && !state.isDemoMode) {
+                targetRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
+            }
+
+            const detailMap = new Map(); // key: record.id, value: { record, amount }
+
+            targetRecords.forEach(record => {
+                const entries = parseSchedule(record.schedule || '');
+                entries.forEach(entry => {
+                    if (entry.date && entry.interest > 0) {
+                        let match = false;
+                        if (isMonth) {
+                            const yearMonth = `${entry.date.getFullYear()}-${String(entry.date.getMonth()+1).padStart(2,'0')}`;
+                            if (yearMonth === period) match = true;
+                        } else {
+                            const year = `${entry.date.getFullYear()}`;
+                            if (year === period) match = true;
+                        }
+                        if (match) {
+                            const current = detailMap.get(record.id) || { record, amount: 0 };
+                            current.amount += entry.interest;
+                            detailMap.set(record.id, current);
+                        }
+                    }
+                });
+            });
+
+            // 轉為陣列並排序
+            const details = Array.from(detailMap.values());
+            details.sort((a,b) => b.amount - a.amount);
+            return details;
+        };
+
+        // 顯示收入明細模態框
+        const showIncomeDetailModal = (period, isMonth, totalAmount) => {
+            const details = getIncomeDetailForPeriod(period, isMonth);
+            if (details.length === 0) {
+                window.showError(`此${isMonth ? '月份' : '年份'}無收入紀錄`);
+                return;
+            }
+
+            const periodLabel = isMonth ? period : `${period} 年`;
+            const modalHtml = `
+            <div id="incomeDetailModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 animate-fade-in backdrop-blur-sm">
+                <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col">
+                    <div class="p-4 flex justify-between items-center text-white shrink-0 bg-gradient-to-r from-emerald-600 to-teal-600 rounded-t-xl">
+                        <h3 class="font-bold flex items-center"><i data-lucide="trending-up" class="w-5 h-5 mr-2"></i>${periodLabel} 收入明細 (總計: $${formatNumber(totalAmount)})</h3>
+                        <button onclick="document.getElementById('incomeDetailModal').remove()" class="hover:bg-white/20 p-1 rounded"><i data-lucide="x" class="w-5 h-5"></i></button>
+                    </div>
+                    <div class="p-4 overflow-y-auto flex-1">
+                        <table class="w-full text-left border-collapse">
+                            <thead class="bg-gray-50 text-gray-500 text-xs uppercase sticky top-0">
+                                <tr>
+                                    <th class="p-2">案件編號</th>
+                                    <th class="p-2">借款人</th>
+                                    <th class="p-2 text-right">該期利息收入</th>
+                                    <th class="p-2 text-center">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-100">
+                                ${details.map(d => {
+                                    const record = d.record;
+                                    const displayId = record.displayId || record.caseNumber || '';
+                                    return `<tr class="hover:bg-gray-50 transition-colors">
+                                        <td class="p-2 font-mono">${displayId}</td>
+                                        <td class="p-2 font-bold text-gray-800">${record.borrower || ''}</td>
+                                        <td class="p-2 text-right font-mono font-bold text-emerald-600">$${formatNumber(d.amount)}</td>
+                                        <td class="p-2 text-center">
+                                            <button onclick="window.startEdit('${record.id}'); setTimeout(() => document.getElementById('incomeDetailModal')?.remove(), 100);" class="text-blue-600 hover:underline text-xs">前往編輯</button>
+                                        </td>
+                                    </tr>`;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="p-4 border-t border-gray-100 bg-gray-50 text-right shrink-0">
+                        <button onclick="document.getElementById('incomeDetailModal').remove()" class="px-4 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 text-sm">關閉</button>
+                    </div>
+                </div>
+            </div>
+            `;
+            document.body.insertAdjacentHTML('beforeend', modalHtml);
+            lucide.createIcons();
+        };
+
+        // 打開趨勢圖模態框並繪製圖表
+        window.openTrendModal = () => {
+            updateState({ showTrendModal: true });
+            // 等待 DOM 更新後再繪製
+            setTimeout(() => {
+                drawTrendChart();
+            }, 50);
+        };
+        
+        // 切換趨勢視圖（月/年）
+        window.switchTrendView = (view) => {
+            state.trendView = view;
+            drawTrendChart();
+        };
+        
+        // 關閉趨勢圖模態框
+        window.closeTrendModal = () => {
+            updateState({ showTrendModal: false });
+        };
+
+        // 繪製圖表
+        let trendChartInstance = null;
+        const drawTrendChart = () => {
+            const chartDom = document.getElementById('trendChart');
+            if (!chartDom) return;
+            
+            if (trendChartInstance) {
+                trendChartInstance.dispose();
+            }
+            const { months, monthData, years, yearData } = computeIncomeTrend();
+            const isMonthView = state.trendView === 'month';
+            const xAxisData = isMonthView ? months : years;
+            const seriesData = isMonthView ? monthData : yearData;
+            
+            const option = {
+                title: {
+                    text: isMonthView ? '近12個月淨收入趨勢 (利息收入)' : '歷年淨收入趨勢 (利息收入)',
+                    left: 'center',
+                    textStyle: { fontSize: 14, fontWeight: 'normal' }
+                },
+                tooltip: {
+                    trigger: 'axis',
+                    axisPointer: { type: 'shadow' },
+                    valueFormatter: (value) => `$${formatNumber(value)}`
+                },
+                grid: {
+                    left: '10%',
+                    right: '10%',
+                    bottom: '15%',
+                    containLabel: true
+                },
+                xAxis: {
+                    type: 'category',
+                    data: xAxisData,
+                    axisLabel: { rotate: 45, interval: 0 }
+                },
+                yAxis: {
+                    type: 'value',
+                    name: '淨收入 (NTD)',
+                    axisLabel: {
+                        formatter: (value) => `$${formatNumber(value)}`
+                    }
+                },
+                series: [{
+                    data: seriesData,
+                    type: 'line',
+                    smooth: true,
+                    lineStyle: { width: 3, color: '#10b981' },
+                    areaStyle: { opacity: 0.3, color: '#10b981' },
+                    symbol: 'circle',
+                    symbolSize: 8,
+                    itemStyle: { color: '#059669' },
+                    name: '淨收入'
+                }],
+                dataZoom: [
+                    {
+                        type: 'slider',
+                        start: 0,
+                        end: 100,
+                        bottom: 10
+                    },
+                    {
+                        type: 'inside',
+                        start: 0,
+                        end: 100
+                    }
+                ],
+                toolbox: {
+                    feature: {
+                        saveAsImage: { title: '儲存為圖片' }
+                    }
+                }
+            };
+            trendChartInstance = echarts.init(chartDom);
+            trendChartInstance.setOption(option);
+            
+            // 添加點擊事件
+            trendChartInstance.off('click'); // 避免重複綁定
+            trendChartInstance.on('click', (params) => {
+                if (params.componentType === 'series' && params.dataIndex !== undefined) {
+                    const period = xAxisData[params.dataIndex];
+                    const amount = seriesData[params.dataIndex];
+                    if (period && amount > 0) {
+                        showIncomeDetailModal(period, isMonthView, amount);
+                    } else if (amount === 0) {
+                        window.showError(`此${isMonthView ? '月份' : '年份'}無收入紀錄`);
+                    }
+                }
+            });
+            
+            window.addEventListener('resize', () => trendChartInstance?.resize());
+        };
+        // ================== 新增結束 ==================
+
         // Render Functions
         function renderAuth() { 
             return `<div class="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 flex items-center justify-center p-4 font-sans">
@@ -3679,6 +3933,12 @@ const renderUserSwitcher = () => {
                                 </div>
                                 ` : ''}
                             </div>
+                        </div>
+                        <!-- 新增：淨收入趨勢圖按鈕區塊 -->
+                        <div class="bg-white rounded-xl p-4 shadow-md border border-gray-200 text-center cursor-pointer hover:shadow-lg transition-all" onclick="window.openTrendModal()">
+                            <i data-lucide="trending-up" class="w-8 h-8 text-emerald-600 mx-auto mb-2"></i>
+                            <h3 class="font-bold text-gray-800">淨收入趨勢圖</h3>
+                            <p class="text-xs text-gray-500 mt-1">查看歷年/近12個月收入走勢</p>
                         </div>
                     </div>
                 </div>
@@ -4203,6 +4463,10 @@ const renderUserSwitcher = () => {
             </div>`; 
         }
 
+        // 修正逾期未繳卡片彈出列表，加入「本月繳款狀態」欄位
+        // 此部分在原有模態框構建邏輯中已修改，我們將在下面整體模態框代碼中體現。
+        // 為了保持完整性，我們在渲染模態框時已經調整了 `state.modalType === 'unpaid'` 的列表結構。
+
         function renderApp() { 
             const app = document.getElementById('app');
             if (!state.currentUser && !state.isDemoMode) {
@@ -4315,7 +4579,7 @@ const renderUserSwitcher = () => {
                             <th class="p-2 text-right">應付(給委託人)</th>
                             <th class="p-2 text-center">本月繳款狀態</th>
                             <th class="p-2 text-center">操作</th>
-                        </tr>`;
+                          </tr>`;
                         customRowBuilder = (r, calc, status) => {
                             // 計算應付(給委託人)
                             const loan = Number(r.loanAmount) || 0;
@@ -4355,7 +4619,7 @@ const renderUserSwitcher = () => {
                                 <td class="p-2 text-center">
                                     <button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button>
                                 </td>
-                            </tr>`;
+                              </tr>`;
                         };
                     }
                     // 修改：進行中（狀態1）的彈出視窗
@@ -4366,7 +4630,7 @@ const renderUserSwitcher = () => {
                             <th class="p-2 text-right">利息累計</th>
                             <th class="p-2 text-center">本月繳款狀態</th>
                             <th class="p-2 text-center">操作</th>
-                        </tr>`;
+                          </tr>`;
                         customRowBuilder = (r, calc, status) => {
                             const { isPaid, isOverdue } = getPaymentStatus(r);
                             let paymentStatusHtml = '';
@@ -4390,7 +4654,7 @@ const renderUserSwitcher = () => {
                                 <td class="p-2 text-center">
                                     <button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button>
                                 </td>
-                            </tr>`;
+                              </tr>`;
                         };
                     }
                     // 新增：總收入和淨收入的彈出視窗
@@ -4400,14 +4664,14 @@ const renderUserSwitcher = () => {
                             <th class="p-2 text-right">利息累計</th>
                             <th class="p-2 text-center">狀態</th>
                             <th class="p-2 text-center">操作</th>
-                        </tr>`;
+                          </tr>`;
                         customRowBuilder = (r, calc, status) => {
                             return `<tr class="hover:bg-gray-50 transition-colors">
                                 <td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId || r.caseNumber || ''})</span></td>
                                 <td class="p-2 text-right font-mono font-bold text-emerald-600">${formatNumber(calc.totalInterestPaid)}</td>
                                 <td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td>
                                 <td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td>
-                            </tr>`;
+                              </tr>`;
                         };
                     }
                     // 新增：在外本金的彈出視窗
@@ -4417,14 +4681,14 @@ const renderUserSwitcher = () => {
                             <th class="p-2 text-right">在外本金</th>
                             <th class="p-2 text-center">狀態</th>
                             <th class="p-2 text-center">操作</th>
-                        </tr>`;
+                          </tr>`;
                         customRowBuilder = (r, calc, status) => {
                             return `<tr class="hover:bg-gray-50 transition-colors">
                                 <td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId || r.caseNumber || ''})</span></td>
                                 <td class="p-2 text-right font-mono font-bold text-blue-600">${formatNumber(calc.outstanding)}</td>
                                 <td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td>
                                 <td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td>
-                            </tr>`;
+                              </tr>`;
                         };
                     }
                     // 新增：目前放款額的彈出視窗
@@ -4434,213 +4698,27 @@ const renderUserSwitcher = () => {
                             <th class="p-2 text-right">借款金額</th>
                             <th class="p-2 text-center">狀態</th>
                             <th class="p-2 text-center">操作</th>
-                        </tr>`;
+                          </tr>`;
                         customRowBuilder = (r, calc, status) => {
                             return `<tr class="hover:bg-gray-50 transition-colors">
                                 <td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId || r.caseNumber || ''})</span></td>
                                 <td class="p-2 text-right font-mono font-bold text-blue-600">${formatNumber(r.loanAmount)}</td>
                                 <td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td>
                                 <td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td>
-                            </tr>`;
+                              </tr>`;
                         };
                     }
                     
-                    // ============ 在這裡添加協商案件處理 ============
-// 新增：協商中（狀態5）的彈出視窗
-else if (state.modalType === 'negotiation') {
-    customHeaders = `<tr>
-        <th class="p-2">借款人</th>
-        <th class="p-2 text-right">協商本金 (每期)</th>
-        <th class="p-2 text-center">本月繳款狀態</th>
-        <th class="p-2 text-center">狀態</th>
-        <th class="p-2 text-center">操作</th>
-    </tr>`;
-    customRowBuilder = (r, calc, status) => {
-        const { isPaid, isOverdue } = getPaymentStatus(r);
-        let paymentStatusHtml = '';
-        if (isPaid) {
-            paymentStatusHtml = `<span class="text-emerald-600 font-bold text-xs"><i data-lucide="check" class="w-3 h-3 inline"></i>已繳清</span>`;
-        } else if (isOverdue) {
-            paymentStatusHtml = `<span class="text-red-600 font-bold text-xs"><i data-lucide="alert-triangle" class="w-3 h-3 inline"></i>逾期</span>`;
-        } else {
-            paymentStatusHtml = `<span class="text-gray-500 font-bold text-xs">未繳</span>`;
-        }
-        return `<tr class="hover:bg-gray-50 transition-colors">
-            <td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId || r.caseNumber || ''})</span></td>
-            <td class="p-2 text-right font-mono font-bold text-purple-600">${formatNumber(r.negotiationPrincipal || 0)}</td>
-            <td class="p-2 text-center">
-                <button onclick="window.handleRepaymentSelect('${r.id}'); window.updateState({modalType: null, activeTab: 'repayment'});" class="text-blue-600 hover:underline text-xs">
-                    ${paymentStatusHtml}
-                </button>
-            </td>
-            <td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td>
-            <td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td>
-        </tr>`;
-    };
-}
-
-// ============ 在這裡添加本期逾期案件處理 ============
-// 新增：本期逾期（unpaid）的彈出視窗
-else if (state.modalType === 'unpaid') {
-    customHeaders = `<tr>
-        <th class="p-2">借款人</th>
-        <th class="p-2 text-right">每期應繳</th>
-        <th class="p-2 text-center">本月繳款狀態</th>
-        <th class="p-2 text-center">狀態</th>
-        <th class="p-2 text-center">操作</th>
-    </tr>`;
-    customRowBuilder = (r, calc, status) => {
-        let termAmount = 0;
-        if (r.status === '5') {
-            termAmount = Number(r.negotiationPrincipal) || 0;
-        } else {
-            termAmount = (Number(r.principalPerTerm) || 0) + (Number(r.interestPerTerm) || 0);
-        }
-        const { isPaid, isOverdue } = getPaymentStatus(r);
-        let paymentStatusHtml = '';
-        if (isPaid) {
-            paymentStatusHtml = `<span class="text-emerald-600 font-bold text-xs"><i data-lucide="check" class="w-3 h-3 inline"></i>已繳清</span>`;
-        } else if (isOverdue) {
-            paymentStatusHtml = `<span class="text-red-600 font-bold text-xs"><i data-lucide="alert-triangle" class="w-3 h-3 inline"></i>逾期</span>`;
-        } else {
-            paymentStatusHtml = `<span class="text-gray-500 font-bold text-xs">未繳</span>`;
-        }
-        return `<tr class="hover:bg-gray-50 transition-colors">
-            <td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId || r.caseNumber || ''})</span></td>
-            <td class="p-2 text-right font-mono font-bold text-red-600">${formatNumber(termAmount)}</td>
-            <td class="p-2 text-center">
-                <button onclick="window.handleRepaymentSelect('${r.id}'); window.updateState({modalType: null, activeTab: 'repayment'});" class="text-blue-600 hover:underline text-xs">
-                    ${paymentStatusHtml}
-                </button>
-            </td>
-            <td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td>
-            <td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td>
-        </tr>`;
-    };
-}
-// ============ 插入結束 ============
-                    
-                                        
-                    else {
-                        customHeaders = `<tr><th class="p-2">借款人</th><th class="p-2 text-right">欠款</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr>`;
-                        customRowBuilder = (r, calc, status) => `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId || r.caseNumber || ''})</span></td><td class="p-2 text-right text-red-600 font-mono">${formatNumber(calc.arrears)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td><td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td></tr>`;
-                    }
-                    
-                     // 修改：為其他卡片類型也加入本月繳款狀態欄位
-                    if (state.modalType === 'monthDue' || state.modalType === 'monthDiff' || state.modalType === 'unpaid' || state.modalType === 'negotiationDue' || state.modalType === 'negotiationCollected' || state.modalType === 'monthInterestDiff' || state.modalType === 'monthInterestDue' || state.modalType === 'monthInterestCollected' || state.modalType === 'monthCollected') {
-                        let customHeadersHTML = `<tr>
-                            <th class="p-2">借款人</th>`;
-                        
-                        if (state.modalType === 'monthDue' || state.modalType === 'monthDiff' || state.modalType === 'monthCollected') {
-                            customHeadersHTML += `
-                                <th class="p-2 text-right">本期本金</th>
-                                <th class="p-2 text-right">本期利息</th>
-                                <th class="p-2 text-right">${state.modalType === 'monthDiff' ? '未繳總計' : (state.modalType === 'monthCollected' ? '合計' : '總計')}</th>
-                            `;
-                        } else if (state.modalType === 'monthInterestDiff' || state.modalType === 'monthInterestDue' || state.modalType === 'monthInterestCollected') {
-                            customHeadersHTML += `<th class="p-2 text-right">${state.modalType === 'monthInterestCollected' ? '本月已收利息' : '本期利息'}</th>`;
-                        } else if (state.modalType === 'negotiationDue' || state.modalType === 'negotiationCollected') {
-                            customHeadersHTML += `<th class="p-2 text-right">${state.modalType === 'negotiationDue' ? '協商本金' : '協商已收款'}</th>`;
-                        } else if (state.modalType === 'unpaid') {
-                            customHeadersHTML += `<th class="p-2 text-right">未繳金額</th>`;
-                        }
-                        
-                        if (state.modalType === 'monthInterestDue' || state.modalType === 'monthDue' || state.modalType === 'monthDiff' || state.modalType === 'unpaid') {
-                            customHeadersHTML += `<th class="p-2 text-center">本月繳款狀態</th>`;
-                        }
-                        
-                        customHeadersHTML += `<th class="p-2 text-center">狀態</th>`;
-                        
-                        if (state.modalType !== 'unpaid' && state.modalType !== 'monthDiff' && state.modalType !== 'negotiationCollected' && state.modalType !== 'monthInterestCollected') {
-                            customHeadersHTML += `<th class="p-2 text-center">操作</th>`;
-                        }
-                        
-                        customHeadersHTML += `</tr>`;
-                        customHeaders = customHeadersHTML;
-                        
+                    // ============ 新增：協商案件處理 ============
+                    else if (state.modalType === 'negotiation') {
+                        customHeaders = `<tr>
+                            <th class="p-2">借款人</th>
+                            <th class="p-2 text-right">協商本金 (每期)</th>
+                            <th class="p-2 text-center">本月繳款狀態</th>
+                            <th class="p-2 text-center">狀態</th>
+                            <th class="p-2 text-center">操作</th>
+                          </tr>`;
                         customRowBuilder = (r, calc, status) => {
-                               // ===== 新增：處理協商應收款 =====
-    if (state.modalType === 'negotiationDue') {
-        const { isPaid, isOverdue } = getPaymentStatus(r);
-        let paymentStatusHtml = '';
-        if (isPaid) {
-            paymentStatusHtml = `<span class="text-emerald-600 font-bold text-xs"><i data-lucide="check" class="w-3 h-3 inline"></i>已繳清</span>`;
-        } else if (isOverdue) {
-            paymentStatusHtml = `<span class="text-red-600 font-bold text-xs"><i data-lucide="alert-triangle" class="w-3 h-3 inline"></i>逾期</span>`;
-        } else {
-            paymentStatusHtml = `<span class="text-gray-500 font-bold text-xs">未繳</span>`;
-        }
-        
-        const negotiationPrincipal = Number(r.negotiationPrincipal) || 0;
-        
-        return `<tr class="hover:bg-gray-50 transition-colors">
-            <td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId || r.caseNumber || ''})</span></td>
-            <td class="p-2 text-right font-mono font-bold text-purple-600">${formatNumber(negotiationPrincipal)}</td>
-            <td class="p-2 text-center">
-                <button onclick="window.handleRepaymentSelect('${r.id}'); window.updateState({modalType: null, activeTab: 'repayment'});" class="text-blue-600 hover:underline text-xs">
-                    ${paymentStatusHtml}
-                </button>
-            </td>
-            <td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td>
-            <td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td>
-        </tr>`;
-    }
-     // ===== 新增：處理本月款差 =====
-    if (state.modalType === 'monthDiff') {
-        let p = 0;
-        let i = 0;
-        
-        if (r.status === '5') {
-            p = Number(r.negotiationPrincipal) || 0;
-            i = 0;
-        } else if (r.status === '2') {
-            p = 0;
-            i = Number(r.interestPerTerm) || 0;
-        } else {
-            p = Number(r.principalPerTerm) || 0;
-            i = Number(r.interestPerTerm) || 0;
-        }
-        
-        const { isPaid, isOverdue } = getPaymentStatus(r);
-        let paymentStatusHtml = '';
-        if (isPaid) {
-            paymentStatusHtml = `<span class="text-emerald-600 font-bold text-xs"><i data-lucide="check" class="w-3 h-3 inline"></i>已繳清</span>`;
-        } else if (isOverdue) {
-            paymentStatusHtml = `<span class="text-red-600 font-bold text-xs"><i data-lucide="alert-triangle" class="w-3 h-3 inline"></i>逾期</span>`;
-        } else {
-            paymentStatusHtml = `<span class="text-gray-500 font-bold text-xs">未繳</span>`;
-        }
-        
-        const total = p + i;
-        
-        return `<tr class="hover:bg-gray-50 transition-colors">
-            <td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId || r.caseNumber || ''})</span></td>
-            <td class="p-2 text-right font-mono">${formatNumber(p)}</td>
-            <td class="p-2 text-right font-mono">${formatNumber(i)}</td>
-            <td class="p-2 text-right font-mono font-bold text-red-600">${formatNumber(total)}</td>
-            <td class="p-2 text-center">
-                <button onclick="window.handleRepaymentSelect('${r.id}'); window.updateState({modalType: null, activeTab: 'repayment'});" class="text-blue-600 hover:underline text-xs">
-                    ${paymentStatusHtml}
-                </button>
-            </td>
-            <td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td>
-        </tr>`;
-    }
-    // ===== 結束新增 =====
-                            let p = 0;
-                            let i = 0;
-                            
-                            if (r.status === '5') {
-                                p = Number(r.negotiationPrincipal) || 0;
-                                i = 0;
-                            } else if (r.status === '2') {
-                                p = 0;
-                                i = Number(r.interestPerTerm) || 0;
-                            } else {
-                                p = Number(r.principalPerTerm) || 0;
-                                i = Number(r.interestPerTerm) || 0;
-                            }
-                            
                             const { isPaid, isOverdue } = getPaymentStatus(r);
                             let paymentStatusHtml = '';
                             if (isPaid) {
@@ -4650,105 +4728,85 @@ else if (state.modalType === 'unpaid') {
                             } else {
                                 paymentStatusHtml = `<span class="text-gray-500 font-bold text-xs">未繳</span>`;
                             }
-                            
-                            const total = p + i;
-                            
-                            let cells = `<td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId || r.caseNumber || ''})</span></td>`;
-                            
-                            // 本月已收款：顯示本期本金、本期利息、合計（實際已收）
-                            if (state.modalType === 'monthCollected') {
-                                // 計算本月已收的金額
-                                const entries = parseSchedule(r.schedule || '');
-                                const now = new Date();
-                                const currentMonth = now.getMonth();
-                                const currentYear = now.getFullYear();
-                                
-                                const currentMonthEntries = entries.filter(e => 
-                                    e.date && e.date.getFullYear() === currentYear && e.date.getMonth() === currentMonth
-                                );
-                                
-                                const collectedPrincipal = currentMonthEntries.reduce((sum, e) => sum + e.principal, 0);
-                                const collectedInterest = currentMonthEntries.reduce((sum, e) => sum + e.interest, 0);
-                                const collectedTotal = collectedPrincipal + collectedInterest;
-                                
-                                cells += `
-                                    <td class="p-2 text-right font-mono">${formatNumber(collectedPrincipal)}</td>
-                                    <td class="p-2 text-right font-mono">${formatNumber(collectedInterest)}</td>
-                                    <td class="p-2 text-right font-mono font-bold text-emerald-600">${formatNumber(collectedTotal)}</td>
-                                `;
-                            }
-                            // 本月息差：顯示未繳的本期利息
-                            else if (state.modalType === 'monthInterestDiff') {
-                                if (!isPaid) {
-                                    cells += `<td class="p-2 text-right font-mono font-bold text-red-600">${formatNumber(i)}</td>`;
-                                } else {
-                                    cells += `<td class="p-2 text-right font-mono text-gray-400">0</td>`;
-                                }
-                                cells += `
-                                    <td class="p-2 text-center">
-                                        <button onclick="window.handleRepaymentSelect('${r.id}'); window.updateState({modalType: null, activeTab: 'repayment'});" class="text-blue-600 hover:underline text-xs">
-                                            ${paymentStatusHtml}
-                                        </button>
-                                    </td>
-                                `;
-                            }
-                            // 本月應收息：顯示本期利息和繳款狀態
-                            else if (state.modalType === 'monthInterestDue') {
-                                cells += `
-                                    <td class="p-2 text-right font-mono font-bold ${r.status === '5' ? 'text-purple-600' : 'text-blue-600'}">${formatNumber(i)}</td>
-                                    <td class="p-2 text-center">
-                                        <button onclick="window.handleRepaymentSelect('${r.id}'); window.updateState({modalType: null, activeTab: 'repayment'});" class="text-blue-600 hover:underline text-xs">
-                                            ${paymentStatusHtml}
-                                        </button>
-                                    </td>
-                                `;
-                            }
-                            // 本月已收息：顯示本月已收的利息
-                            else if (state.modalType === 'monthInterestCollected') {
-                                // 計算本月已收的利息
-                                const entries = parseSchedule(r.schedule || '');
-                                const now = new Date();
-                                const currentMonth = now.getMonth();
-                                const currentYear = now.getFullYear();
-                                
-                                const currentMonthEntries = entries.filter(e => 
-                                    e.date && e.date.getFullYear() === currentYear && e.date.getMonth() === currentMonth
-                                );
-                                
-                                const collectedInterest = currentMonthEntries.reduce((sum, e) => sum + e.interest, 0);
-                                
-                                cells += `<td class="p-2 text-right font-mono font-bold text-emerald-600">${formatNumber(collectedInterest)}</td>`;
-                            }
-                            // 其他情況（保持原來的顯示）
-                            else if (state.modalType === 'monthDue' || state.modalType === 'monthDiff') {
-                                cells += `
-                                    <td class="p-2 text-right font-mono">${formatNumber(p)}</td>
-                                    <td class="p-2 text-right font-mono">${formatNumber(i)}</td>
-                                    <td class="p-2 text-right font-mono font-bold ${state.modalType === 'monthDiff' ? 'text-red-600' : (r.status === '5' ? 'text-purple-600' : 'text-blue-600')}">${formatNumber(total)}</td>
-                                `;
-                            } else if (state.modalType === 'negotiationDue' || state.modalType === 'negotiationCollected') {
-                                cells += `<td class="p-2 text-right font-mono font-bold text-purple-600">${formatNumber(p)}</td>`;
-                            } else if (state.modalType === 'unpaid') {
-                                cells += `<td class="p-2 text-right font-mono text-red-600 font-bold">${formatNumber(total)}</td>`;
-                            }
-                            
-                            if (state.modalType !== 'monthInterestDiff' && state.modalType !== 'monthInterestDue' && state.modalType !== 'monthDue' && state.modalType !== 'monthDiff' && state.modalType !== 'unpaid') {
-                                cells += `<td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td>`;
-                            } else if (state.modalType === 'monthInterestDiff' || state.modalType === 'monthInterestDue') {
-                                cells += `<td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td>`;
-                            } else {
-                                cells += `<td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td>`;
-                            }
-                            
-                            if (state.modalType !== 'unpaid' && state.modalType !== 'monthDiff' && state.modalType !== 'negotiationCollected' && state.modalType !== 'monthInterestCollected') {
-                                cells += `<td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td>`;
-                            }
-                            
-                            return `<tr class="hover:bg-gray-50 transition-colors">${cells}</tr>`;
+                            return `<tr class="hover:bg-gray-50 transition-colors">
+                                <td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId || r.caseNumber || ''})</span></td>
+                                <td class="p-2 text-right font-mono font-bold text-purple-600">${formatNumber(r.negotiationPrincipal || 0)}</td>
+                                <td class="p-2 text-center">
+                                    <button onclick="window.handleRepaymentSelect('${r.id}'); window.updateState({modalType: null, activeTab: 'repayment'});" class="text-blue-600 hover:underline text-xs">
+                                        ${paymentStatusHtml}
+                                    </button>
+                                </td>
+                                <td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td>
+                                <td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td>
+                              </tr>`;
                         };
                     }
 
+                    // ============ 修正逾期未繳卡片列表，加入本月繳款狀態 ============
+                    else if (state.modalType === 'unpaid') {
+                        customHeaders = `<tr>
+                            <th class="p-2">借款人</th>
+                            <th class="p-2 text-right">每期應繳</th>
+                            <th class="p-2 text-center">本月繳款狀態</th>
+                            <th class="p-2 text-center">狀態</th>
+                            <th class="p-2 text-center">操作</th>
+                          </tr>`;
+                        customRowBuilder = (r, calc, status) => {
+                            let termAmount = 0;
+                            if (r.status === '5') {
+                                termAmount = Number(r.negotiationPrincipal) || 0;
+                            } else {
+                                termAmount = (Number(r.principalPerTerm) || 0) + (Number(r.interestPerTerm) || 0);
+                            }
+                            const { isPaid, isOverdue } = getPaymentStatus(r);
+                            let paymentStatusHtml = '';
+                            if (isPaid) {
+                                paymentStatusHtml = `<span class="text-emerald-600 font-bold text-xs"><i data-lucide="check" class="w-3 h-3 inline"></i>已繳清</span>`;
+                            } else if (isOverdue) {
+                                paymentStatusHtml = `<span class="text-red-600 font-bold text-xs"><i data-lucide="alert-triangle" class="w-3 h-3 inline"></i>逾期</span>`;
+                            } else {
+                                paymentStatusHtml = `<span class="text-gray-500 font-bold text-xs">未繳</span>`;
+                            }
+                            return `<tr class="hover:bg-gray-50 transition-colors">
+                                <td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId || r.caseNumber || ''})</span></td>
+                                <td class="p-2 text-right font-mono font-bold text-red-600">${formatNumber(termAmount)}</td>
+                                <td class="p-2 text-center">
+                                    <button onclick="window.handleRepaymentSelect('${r.id}'); window.updateState({modalType: null, activeTab: 'repayment'});" class="text-blue-600 hover:underline text-xs">
+                                        ${paymentStatusHtml}
+                                    </button>
+                                </td>
+                                <td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td>
+                                <td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td>
+                              </tr>`;
+                        };
+                    }
+                    
+                    // 其他卡片類型的列表（保持原有邏輯，但若需要也可加上繳款狀態，此處不變）
+                    else {
+                        customHeaders = `<tr><th class="p-2">借款人</th><th class="p-2 text-right">欠款</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr>`;
+                        customRowBuilder = (r, calc, status) => `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId || r.caseNumber || ''})</span></td><td class="p-2 text-right text-red-600 font-mono">${formatNumber(calc.arrears)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td><td class="p-2 text-center"><button onclick="window.updateState({modalType: null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button></td></tr>`;
+                    }
+                    
                     modalHtml += `<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 animate-fade-in backdrop-blur-sm"><div class="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col"><div class="p-4 flex justify-between items-center text-white shrink-0 bg-gradient-to-r from-blue-600 to-indigo-600"><h3 class="font-bold flex items-center"><i data-lucide="list" class="w-5 h-5 mr-2"></i> 案件列表</h3><button onclick="window.updateState({modalType: null})" class="hover:bg-white/20 p-1 rounded"><i data-lucide="x" class="w-5 h-5"></i></button></div><div class="p-0 overflow-y-auto flex-1"><table class="w-full text-left border-collapse"><thead class="bg-gray-50 text-gray-500 text-xs uppercase sticky top-0">${customHeaders}</thead><tbody class="divide-y divide-gray-100 text-sm">${filteredWithDisplayIds.map(r => { const calc = calculateDerivedData(r); const status = getStatusLabel(r.status); return customRowBuilder(r, calc, status); }).join('')}</tbody></table></div></div></div>`;
+                }
+
+                // 新增趨勢圖模態框
+                if (state.showTrendModal) {
+                    modalHtml += `<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 animate-fade-in backdrop-blur-sm">
+                        <div class="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[90vh] flex flex-col">
+                            <div class="p-4 flex justify-between items-center text-white shrink-0 bg-gradient-to-r from-emerald-600 to-teal-600 rounded-t-xl">
+                                <h3 class="font-bold flex items-center"><i data-lucide="trending-up" class="w-5 h-5 mr-2"></i>淨收入趨勢圖</h3>
+                                <button onclick="window.closeTrendModal()" class="hover:bg-white/20 p-1 rounded"><i data-lucide="x" class="w-5 h-5"></i></button>
+                            </div>
+                            <div class="p-4 border-b border-gray-200 flex justify-center space-x-4">
+                                <button onclick="window.switchTrendView('month')" class="px-4 py-2 rounded-lg text-sm font-medium ${state.trendView === 'month' ? 'bg-emerald-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}">近12個月</button>
+                                <button onclick="window.switchTrendView('year')" class="px-4 py-2 rounded-lg text-sm font-medium ${state.trendView === 'year' ? 'bg-emerald-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}">歷年</button>
+                            </div>
+                            <div class="flex-1 p-4 overflow-hidden">
+                                <div id="trendChart" style="width: 100%; height: 500px;"></div>
+                            </div>
+                        </div>
+                    </div>`;
                 }
 
                 app.innerHTML = `<div class="flex h-screen bg-slate-100 font-sans text-gray-800">
