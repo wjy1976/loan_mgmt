@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>財務管理系統 (ver 2.028.0118) - 最終決定版</title>
+    <title>財務管理系統 (ver 2.029.0724-D) - 彈卡預覽版</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Lucide Icons -->
@@ -69,6 +69,22 @@
             color: #6b7280;
             margin-top: 4px;
             font-weight: normal;
+        }
+        /* 趨勢圖表高度：手機版較矮 */
+        .trend-chart { width: 100%; height: 360px; }
+        @media (min-width: 640px) {
+            .trend-chart { height: 450px; }
+        }
+        @media (min-width: 1024px) {
+            .trend-chart { height: 540px; }
+        }
+        /* 趨勢圖明細弹窗：手機版用 card 列表，桌面版用表格 */
+        .detail-table-view { display: none; }
+        .detail-card-view { display: block; }
+        @media (min-width: 768px) {
+            .detail-table-view { display: table; }
+            .detail-card-view { display: none; }
+        }
             line-height: 1.2;
         }
         /* 可點擊的還款期數 */
@@ -226,7 +242,7 @@ const state = {
     tempScheduleLines: [], isLoadingListener: false, isImporting: false, unpaidFilter: null,
     batchDeleteMode: false, selectedCasesForBatch: [], activeCasesFilter: true,
     cardColors: {}, history: [], statusFilter: null, demoModeLocked: !firebaseAvailable,
-    showTrendModal: false, trendView: 'month'
+    showTrendModal: false, trendView: 'month', activePreviewId: null, previewAnchor: null, showBadDebtTrendModal: false, badDebtTrendView: 'month'
 };
 
 if (state.isDemoMode) {
@@ -242,7 +258,7 @@ if (state.isDemoMode) {
 const initialFormState = {
     status: '1', method: '叨簿子', date: '', borrower: '', job: '', idNumber: '', address: '', telephone: '', mobile: '',
     loanAmount: '', disbursed: '', interestRate: '', specialRate: '', agent: '', terms: '', repayDay: '',
-    principalPerTerm: '', interestPerTerm: '', currentPrincipal: '', currentInterest: '', note: '', schedule: '', negotiationPrincipal: ''
+    principalPerTerm: '', interestPerTerm: '', currentPrincipal: '', currentInterest: '', note: '', schedule: '', negotiationPrincipal: '', executionStatus: ''
 };
 let formData = { ...initialFormState };
 
@@ -312,7 +328,7 @@ const cleanFormDataForSave = (data) => {
         if (cleaned[field] !== undefined && cleaned[field] !== null && cleaned[field] !== '') cleaned[field] = Number(cleaned[field]) || 0;
         else cleaned[field] = 0;
     });
-    const stringFields = ['borrower','job','idNumber','address','telephone','mobile','agent','repayDay','note','method','status','date'];
+    const stringFields = ['borrower','job','idNumber','address','telephone','mobile','agent','repayDay','note','method','status','date','executionStatus'];
     stringFields.forEach(field => {
         if (cleaned[field] === undefined || cleaned[field] === null) cleaned[field] = '';
         else cleaned[field] = String(cleaned[field]);
@@ -354,7 +370,25 @@ const calculateDerivedData = (record) => {
     let remainingTerms = '-', roiTerms = "-";
     const method = record.method || '';
     const isSpecialMethod = ['設定', '票貼', '小額'].includes(method);
-    if (!isSpecialMethod) {
+    if (isSpecialMethod) {
+        // 票貼/小額/設定 沒有每期還本金，但有還利息，
+        // 回本餘期 = ceil(在外本金 / 每月利息)，代表「本金等值月利息期數」
+        const termInterestSp = Number(record.interestPerTerm) || 0;
+        if (record.status === '3') {
+            roiTerms = "∞";
+        } else if (outstanding > 0 && termInterestSp > 0) {
+            const monthsEquivalent = Math.ceil(outstanding / termInterestSp);
+            remainingTerms = monthsEquivalent;
+            roiTerms = monthsEquivalent;
+        } else if (outstanding <= 0) {
+            remainingTerms = "0";
+            roiTerms = "0";
+        } else {
+            // 沒利息資訊或剛開始沒在外本金
+            remainingTerms = '-';
+            roiTerms = '-';
+        }
+    } else {
         const terms = Number(record.terms) || 0;
         const repaidTerms = entries.length;
         let val = terms - repaidTerms; if (val < 0) val = 0;
@@ -391,6 +425,296 @@ const getLastRepaymentDateStr = (record) => {
     if (dates.length === 0) return '';
     const latest = new Date(Math.max(...dates));
     return latest.toISOString().split('T')[0];
+};
+
+// === 漏期計算 (Issue 1 - 彈卡支援) ===
+// 規則：
+// 1. 預期應繳日 = 放款日 + N 個月（以「每期還款日」為基準日）
+// 2. 過濾：未來不計、當月未到繳款日也不計
+// 3. 分配：每筆還款依日期由舊到新，分配到「<= 該還款日」且「尚未被分配」的最新一筆預期應繳日
+// 4. 漏期 = 預期未分配的應繳日清單
+const calculateMissedPeriods = (record, now) => {
+    if (!record) return [];
+    if (record.status === '0' || record.status === '4') return []; // 結案不計漏期
+    if (!record.date) return [];
+    now = now || new Date();
+    const loanDate = new Date(String(record.date).replace(/\//g, '-'));
+    if (isNaN(loanDate.getTime())) return [];
+    // 取得每期還款日
+    let dueDay = null;
+    if (record.repayDay) {
+        const m = String(record.repayDay).match(/(\d+)/);
+        if (m) dueDay = parseInt(m[1], 10);
+    }
+    if (!dueDay || dueDay < 1 || dueDay > 31) dueDay = loanDate.getDate();
+    // 計算第一個預期應繳日 = 放款日 + 1 個月
+    let firstDue = new Date(loanDate);
+    firstDue.setMonth(firstDue.getMonth() + 1);
+    let fY = firstDue.getFullYear();
+    let fM = firstDue.getMonth();
+    let lastDayFirst = new Date(fY, fM + 1, 0).getDate();
+    firstDue.setDate(Math.min(dueDay, lastDayFirst));
+    // 特殊情況：如果第一筆還款紀錄在放款當月，則當月為第一期
+    const scheduleDates = extractDatesFromSchedule(record.schedule || '');
+    if (scheduleDates.length > 0) {
+        const firstScheduleDate = new Date(Math.min(...scheduleDates));
+        if (firstScheduleDate.getFullYear() === loanDate.getFullYear() && firstScheduleDate.getMonth() === loanDate.getMonth()) {
+            const loanLastDay = new Date(loanDate.getFullYear(), loanDate.getMonth() + 1, 0).getDate();
+            firstDue = new Date(loanDate);
+            firstDue.setDate(Math.min(dueDay, loanLastDay));
+        }
+    }
+    // 產生所有預期應繳日 (到今天為止)
+    const expectedDues = [];
+    let nextDue = new Date(firstDue);
+    const maxPeriods = Math.max(Number(record.terms) || 0, 60);
+    for (let i = 0; i < maxPeriods; i++) {
+        if (nextDue > now) break;
+        expectedDues.push(new Date(nextDue));
+        const ny = nextDue.getFullYear();
+        const nm = nextDue.getMonth() + 1;
+        const lastDay = new Date(ny, nm + 1, 0).getDate();
+        nextDue = new Date(ny, nm, Math.min(dueDay, lastDay));
+    }
+    // 分配還款 (規則：過去優先，找不到才用同月)
+    // 1. 優先：<= 還款日的最近一筆尚未分配預期應繳日 (處理延遲情況)
+    // 2. 退而求其次：同月尚未分配的預期應繳日 (處理提前還款的情況)
+    const entries = parseSchedule(record.schedule || '');
+    entries.sort((a, b) => (a.date || 0) - (b.date || 0));
+    const covered = new Set();
+    for (const entry of entries) {
+        if (!entry.date) continue;
+        const payDate = entry.date;
+        const payY = payDate.getFullYear();
+        const payM = payDate.getMonth();
+        let allocated = null;
+        // 1) 過去優先：找 <= 還款日 的最近一筆未分配
+        for (let i = expectedDues.length - 1; i >= 0; i--) {
+            const d = expectedDues[i];
+            if (d <= payDate && !covered.has(d.getTime())) {
+                allocated = d;
+                break;
+            }
+        }
+        // 2) 找不到才用同月 (處理還款日早於該月應繳日的情況，如 8/10 還款但 8/20 才應繳)
+        if (!allocated) {
+            for (let i = expectedDues.length - 1; i >= 0; i--) {
+                const d = expectedDues[i];
+                if (d.getFullYear() === payY && d.getMonth() === payM && !covered.has(d.getTime())) {
+                    allocated = d;
+                    break;
+                }
+            }
+        }
+        if (allocated) covered.add(allocated.getTime());
+    }
+    return expectedDues.filter(d => !covered.has(d.getTime()));
+};
+
+// === 案件預覽彈卡 (開關) ===
+// 關鍵設計：彈卡直接掛在 body 上，開關時不重畫 #app，
+// 這樣列表的捲軸位置完全不受影響
+const getPreviewModalContainer = () => {
+    let container = document.getElementById('case-preview-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'case-preview-container';
+        document.body.appendChild(container);
+    }
+    return container;
+};
+const renderPreviewModalToBody = () => {
+    const container = getPreviewModalContainer();
+    if (state.activePreviewId) {
+        container.innerHTML = renderCasePreviewModal();
+        // 初始進場時要鎖住 body 捲軸，避免背景被捲動
+        document.body.style.overflow = 'hidden';
+        if (window.lucide) window.lucide.createIcons();
+    } else {
+        container.innerHTML = '';
+        document.body.style.overflow = '';
+    }
+};
+window.openCasePreview = (id, event) => {
+    if (event) {
+        event.stopPropagation();
+        event.preventDefault();
+    }
+    state.activePreviewId = id;
+    renderPreviewModalToBody(); // 不重畫列表！
+};
+window.closeCasePreview = () => {
+    state.activePreviewId = null;
+    renderPreviewModalToBody(); // 不重畫列表！
+};
+
+// === 案件預覽彈卡 (渲染) ===
+const renderCasePreviewModal = () => {
+    if (!state.activePreviewId) return '';
+    const record = state.records.find(r => r.id === state.activePreviewId);
+    if (!record) return '';
+    const calc = calculateDerivedData(record);
+    const statusLbl = getStatusLabel(record.status);
+    const { isPaid, isOverdue } = getPaymentStatus(record);
+    const lastPayDate = getLastRepaymentDateStr(record);
+    const missedPeriods = calculateMissedPeriods(record);
+    const totalMissed = missedPeriods.length;
+    const scheduleEntries = parseSchedule(record.schedule || '');
+    const totalTerms = Number(record.terms) || 0;
+    const repaidTerms = scheduleEntries.length;
+    const principal = Number(record.principalPerTerm) || 0;
+    const interest = Number(record.interestPerTerm) || 0;
+    const negotiationP = Number(record.negotiationPrincipal) || 0;
+    // 每期應繳計算
+    let perPeriodAmount = 0;
+    let perPeriodLabel = '每期應繳';
+    let perPeriodBreakdown = '';
+    if (record.status === '5') {
+        perPeriodAmount = negotiationP;
+        perPeriodLabel = '協商本金';
+        perPeriodBreakdown = '(協商無息)';
+    } else if (record.status === '2') {
+        perPeriodAmount = interest;
+        perPeriodLabel = '每期管理費';
+        perPeriodBreakdown = '(純管理費)';
+    } else {
+        perPeriodAmount = principal + interest;
+        perPeriodBreakdown = `(本金 $${formatNumber(principal)} + 利息 $${formatNumber(interest)})`;
+    }
+    // 本月繳款狀態
+    let statusPayText = 'N/A';
+    let statusPayClass = 'text-gray-500';
+    let statusPayBg = 'bg-gray-100';
+    let statusPayIcon = 'minus-circle';
+    let clickable = false;
+    if (record.status === '3' || record.status === '4') {
+        statusPayText = 'N/A';
+        statusPayClass = 'text-gray-700';
+        statusPayBg = 'bg-gray-100';
+        statusPayIcon = 'gavel';
+    } else if (isPaid) {
+        statusPayText = '已繳';
+        statusPayClass = 'text-emerald-700';
+        statusPayBg = 'bg-emerald-100';
+        statusPayIcon = 'check';
+        clickable = true;
+    } else if (isOverdue) {
+        statusPayText = '逾期未繳';
+        statusPayClass = 'text-red-700';
+        statusPayBg = 'bg-red-100';
+        statusPayIcon = 'alert-triangle';
+        clickable = true;
+    } else {
+        statusPayText = '未繳';
+        statusPayClass = 'text-amber-700';
+        statusPayBg = 'bg-amber-100';
+        statusPayIcon = 'alert-circle';
+        clickable = true;
+    }
+    // 漏期清單
+    const missedListId = `missedList_${record.id}`;
+    const missedMonthsStr = missedPeriods.map(d => {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        return `${y}-${m}`;
+    });
+    const missedListHtml = totalMissed > 0
+        ? `<div class="bg-red-50 border border-red-200 rounded-lg p-3 mt-3">
+            <button onclick="document.getElementById('${missedListId}').classList.toggle('hidden'); event.stopPropagation();" class="w-full flex items-center justify-between text-red-700 hover:text-red-900">
+                <span class="font-bold flex items-center text-sm"><i data-lucide="alert-triangle" class="w-4 h-4 mr-1"></i>漏期 ${totalMissed} 期</span>
+                <i data-lucide="chevron-down" class="w-4 h-4"></i>
+            </button>
+            <div id="${missedListId}" class="hidden mt-2 text-xs text-red-700 grid grid-cols-3 gap-1">
+                ${missedMonthsStr.map(m => `<span class="bg-red-100 px-2 py-1 rounded text-center">${m}</span>`).join('')}
+            </div>
+           </div>`
+        : `<div class="text-emerald-600 text-sm font-bold flex items-center mt-3"><i data-lucide="check-circle" class="w-4 h-4 mr-1"></i>無漏期</div>`;
+    // 附註
+    const noteText = record.note || '';
+    const noteLines = noteText.split('\n').map(l => l.trim()).filter(l => l);
+    const lastNotes = noteLines.slice(-3);
+    const noteHtml = lastNotes.length > 0
+        ? lastNotes.map(l => `<div class="text-xs text-gray-700 mb-1 leading-relaxed break-words">• ${l}</div>`).join('')
+        : '<div class="text-xs text-gray-400">無附註</div>';
+    return `<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 animate-fade-in backdrop-blur-sm" onclick="window.closeCasePreview()">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-md md:max-w-lg max-h-[90vh] overflow-y-auto custom-scrollbar" onclick="event.stopPropagation()">
+            <div class="p-4 border-b border-gray-200 flex items-center justify-between bg-gradient-to-r from-slate-700 to-slate-900 text-white rounded-t-xl sticky top-0 z-10">
+                <div class="flex-1 min-w-0">
+                    <div class="text-xs text-slate-300 font-mono">${record.displayId || record.caseNumber || '無編號'}</div>
+                    <h3 class="text-lg font-bold truncate">${record.borrower || '未命名'}</h3>
+                </div>
+                <span class="px-2 py-1 rounded text-xs font-bold ${statusLbl.color} flex-shrink-0 ml-2">${statusLbl.text}</span>
+                <button onclick="window.closeCasePreview()" class="text-white hover:text-gray-200 p-1 ml-2 flex-shrink-0 rounded hover:bg-white/10"><i data-lucide="x" class="w-5 h-5"></i></button>
+            </div>
+            <div class="p-4">
+                <!-- 核心財務數據 (大字) -->
+                <div class="grid grid-cols-3 gap-2 mb-4">
+                    <div class="bg-emerald-50 border border-emerald-200 p-2 rounded-lg text-center">
+                        <div class="text-[10px] text-gray-500 mb-0.5">借款金額</div>
+                        <div class="text-base sm:text-lg font-bold text-emerald-700 font-mono">$${formatNumber(record.loanAmount || 0)}</div>
+                    </div>
+                    <div class="bg-amber-50 border border-amber-200 p-2 rounded-lg text-center">
+                        <div class="text-[10px] text-gray-500 mb-0.5">在外本金</div>
+                        <div class="text-base sm:text-lg font-bold text-amber-700 font-mono">$${formatNumber(calc.outstanding || 0)}</div>
+                    </div>
+                    <div class="bg-red-50 border border-red-200 p-2 rounded-lg text-center">
+                        <div class="text-[10px] text-gray-500 mb-0.5">欠款金額</div>
+                        <div class="text-base sm:text-lg font-bold text-red-700 font-mono">$${formatNumber(calc.arrears || 0)}</div>
+                    </div>
+                </div>
+                <!-- 合約條件 -->
+                <div class="bg-gray-50 p-3 rounded-lg mb-3">
+                    <h4 class="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2 border-b border-gray-200 pb-1">合約條件</h4>
+                    <div class="grid grid-cols-2 gap-y-1.5 gap-x-2 text-sm">
+                        <div><span class="text-gray-500">方式：</span><span class="font-bold">${record.method || '-'}</span></div>
+                        <div><span class="text-gray-500">利率：</span><span class="font-bold">${record.interestRate || 0}%</span></div>
+                        <div><span class="text-gray-500">期數：</span><span class="font-bold">${record.terms || 0} 期</span></div>
+                        <div><span class="text-gray-500">每期還款日：</span><span class="font-bold">${record.repayDay || '-'}</span></div>
+                    </div>
+                    <div class="text-sm mt-2 pt-2 border-t border-gray-200">
+                        <span class="text-gray-500">${perPeriodLabel}：</span>
+                        <span class="font-bold text-blue-700 font-mono">$${formatNumber(perPeriodAmount)}</span>
+                        <span class="text-gray-400 text-xs ml-1">${perPeriodBreakdown}</span>
+                    </div>
+                </div>
+                <!-- 還款進度 -->
+                <div class="bg-blue-50 p-3 rounded-lg mb-1">
+                    <h4 class="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2 border-b border-blue-200 pb-1">還款進度</h4>
+                    <div class="flex items-center justify-between mb-2 text-sm">
+                        <div>
+                            <span class="text-gray-500">已還期數：</span>
+                            <span class="font-bold text-blue-700">${repaidTerms} / ${totalTerms || '-'}</span>
+                        </div>
+                        <div>
+                            <span class="text-gray-500">最後繳款：</span>
+                            <span class="font-mono font-bold text-gray-700">${lastPayDate || '無'}</span>
+                        </div>
+                    </div>
+                    <button ${clickable ? '' : 'disabled'} onclick="${clickable ? `window.handlePaymentStatusClick('${record.id}'); window.closeCasePreview();` : ''}" class="w-full p-2 rounded-lg flex items-center justify-center text-sm font-bold ${statusPayBg} ${statusPayClass} ${clickable ? 'hover:opacity-80 cursor-pointer' : 'cursor-not-allowed opacity-50'}">
+                        <i data-lucide="${statusPayIcon}" class="w-4 h-4 mr-1"></i>
+                        本月繳款狀態：${statusPayText}
+                    </button>
+                </div>
+                <!-- 漏期 -->
+                ${missedListHtml}
+                <!-- 聯絡資訊 -->
+                <div class="bg-gray-50 p-3 rounded-lg mt-3">
+                    <h4 class="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2 border-b border-gray-200 pb-1">聯絡資訊</h4>
+                    <div class="grid grid-cols-2 gap-y-1.5 gap-x-2 text-sm">
+                        <div class="flex items-center min-w-0"><i data-lucide="phone" class="w-3 h-3 mr-1 text-gray-400 flex-shrink-0"></i><span class="truncate">${record.telephone || '-'}</span></div>
+                        <div class="flex items-center min-w-0"><i data-lucide="smartphone" class="w-3 h-3 mr-1 text-gray-400 flex-shrink-0"></i><span class="truncate">${record.mobile || '-'}</span></div>
+                        <div class="flex items-center min-w-0"><i data-lucide="briefcase" class="w-3 h-3 mr-1 text-gray-400 flex-shrink-0"></i><span class="truncate">${record.job || '-'}</span></div>
+                        <div class="flex items-center min-w-0"><i data-lucide="user" class="w-3 h-3 mr-1 text-gray-400 flex-shrink-0"></i><span class="truncate">${record.agent || '-'}</span></div>
+                    </div>
+                </div>
+                <!-- 附註 -->
+                <div class="bg-yellow-50 p-3 rounded-lg mt-3">
+                    <h4 class="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2 border-b border-yellow-200 pb-1">附註 (最新 3 筆)</h4>
+                    ${noteHtml}
+                </div>
+            </div>
+        </div>
+    </div>`;
 };
 
 // 以下為更新狀態、各種事件處理函數 (保留原始完整實作，僅修改 refreshListUI 中的 paymentStatus 換行)
@@ -1449,12 +1773,17 @@ const generateMobileCardsHtml = () => {
         else termAmount = (Number(r.principalPerTerm)||0)+(Number(r.interestPerTerm)||0);
         if (state.batchDeleteMode) {
             const isSelected = state.selectedCasesForBatch.includes(r.id);
-            return `<div class="mobile-case-card mobile-batch-select-card"><div class="mobile-batch-select"><input type="checkbox" ${isSelected ? 'checked' : ''} onclick="window.toggleSelectCaseForBatch('${r.id}')" class="w-5 h-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"></div><div class="mobile-case-header"><div><div class="flex items-center"><span class="mobile-case-id">${r.displayId||r.caseNumber||''}</span><span class="mobile-status-badge ${statusLbl.color}">${statusLbl.text}</span></div><div class="mobile-borrower-name ${borrowerColorClass}">${r.borrower||''}</div><div class="mobile-payment-status ${paymentStatusClass}"><i data-lucide="${paymentStatusIcon}" class="w-3 h-3 mr-1"></i>${paymentStatusText}${lastPayHtml}</div></div></div><div class="mobile-case-details"><div class="mobile-detail-item"><span class="mobile-detail-label">借款金額</span><span class="mobile-detail-value">$${formatNumber(r.loanAmount||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">放款金額</span><span class="mobile-detail-value">${r.status==='2'?'$0':'$'+formatNumber(r.disbursed||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">欠款</span><span class="mobile-detail-value text-red-600 font-bold">$${formatNumber(calc.arrears||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">在外本金</span><span class="mobile-detail-value">$${formatNumber(calc.outstanding||0)}</span></div>${r.status==='5'?`<div class="mobile-detail-item"><span class="mobile-detail-label text-purple-600">協商本金</span><span class="mobile-detail-value text-purple-600 font-bold">$${formatNumber(r.negotiationPrincipal||0)}</span></div>`:''}</div></div>`;
+            return `<div class="mobile-case-card mobile-batch-select-card"><div class="mobile-batch-select"><input type="checkbox" ${isSelected ? 'checked' : ''} onclick="window.toggleSelectCaseForBatch('${r.id}')" class="w-5 h-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"></div><div class="mobile-case-header"><div><div class="flex items-center"><button onclick="window.openCasePreview('${r.id}', event)" class="mobile-case-id bg-transparent border-0 p-0 cursor-pointer hover:underline" title="點擊預覽案件詳情">${r.displayId||r.caseNumber||''}</button><span class="mobile-status-badge ${statusLbl.color}">${statusLbl.text}</span></div><button onclick="window.openCasePreview('${r.id}', event)" class="mobile-borrower-name ${borrowerColorClass} bg-transparent border-0 p-0 text-left cursor-pointer hover:underline" title="點擊預覽案件詳情">${r.borrower||''}</button><div class="mobile-payment-status ${paymentStatusClass}"><i data-lucide="${paymentStatusIcon}" class="w-3 h-3 mr-1"></i>${paymentStatusText}${lastPayHtml}</div></div></div><div class="mobile-case-details"><div class="mobile-detail-item"><span class="mobile-detail-label">借款金額</span><span class="mobile-detail-value">$${formatNumber(r.loanAmount||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">放款金額</span><span class="mobile-detail-value">${r.status==='2'?'$0':'$'+formatNumber(r.disbursed||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">欠款</span><span class="mobile-detail-value text-red-600 font-bold">$${formatNumber(calc.arrears||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">在外本金</span><span class="mobile-detail-value">$${formatNumber(calc.outstanding||0)}</span></div>${r.status==='5'?`<div class="mobile-detail-item"><span class="mobile-detail-label text-purple-600">協商本金</span><span class="mobile-detail-value text-purple-600 font-bold">$${formatNumber(r.negotiationPrincipal||0)}</span></div>`:''}</div></div>`;
         }
-        return `<div class="mobile-case-card"><div class="mobile-case-header"><div><div class="flex items-center"><span class="mobile-case-id">${r.displayId||r.caseNumber||''}</span><span class="mobile-status-badge ${statusLbl.color}">${statusLbl.text}</span></div><div class="mobile-borrower-name ${borrowerColorClass}">${r.borrower||''}</div><div class="mobile-payment-status ${paymentStatusClass}"><i data-lucide="${paymentStatusIcon}" class="w-3 h-3 mr-1"></i>${paymentStatusText}${lastPayHtml}</div></div></div><div class="mobile-case-details"><div class="mobile-detail-item"><span class="mobile-detail-label">放款日期</span><span class="mobile-detail-value">${r.date||''}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">借款金額</span><span class="mobile-detail-value">$${formatNumber(r.loanAmount||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">欠款</span><span class="mobile-detail-value text-red-600 font-bold">$${formatNumber(calc.arrears||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">在外本金</span><span class="mobile-detail-value">$${formatNumber(calc.outstanding||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">${r.status==='5'?'協商每期':'每期應繳'}</span><span class="mobile-detail-value ${r.status==='5'?'text-purple-600 font-bold':''}">$${formatNumber(termAmount)}</span></div>${r.status==='5'?`<div class="mobile-detail-item"><span class="mobile-detail-label text-purple-600">協商本金</span><span class="mobile-detail-value text-purple-600 font-bold">$${formatNumber(r.negotiationPrincipal||0)}</span></div>`:`<div class="mobile-detail-item"><span class="mobile-detail-label">利率</span><span class="mobile-detail-value">${r.interestRate||0}%</span></div>`}</div><div class="mobile-case-actions"><button onclick="window.handlePaymentStatusClick('${r.id}')" class="mobile-action-button ${isPaid?'bg-emerald-100 text-emerald-600 hover:bg-emerald-200':'bg-red-100 text-red-600 hover:bg-red-200'}" title="還款入帳"><i data-lucide="banknote" class="w-4 h-4"></i></button><button onclick="window.startEdit('${r.id}')" class="mobile-action-button bg-blue-100 text-blue-600 hover:bg-blue-200" title="編輯"><i data-lucide="edit-2" class="w-4 h-4"></i></button><button onclick="window.handleDelete('${r.id}')" class="mobile-action-button bg-red-100 text-red-600 hover:bg-red-200" title="刪除"><i data-lucide="trash-2" class="w-4 h-4"></i></button>${((state.isAdmin||r.ownerUid===state.currentUserUid)&&!state.isDemoMode)?`<button onclick="window.forceDeleteCase('${r.id}')" class="mobile-action-button bg-red-200 text-red-800 hover:bg-red-300 border border-red-300" title="強制刪除（管理員）"><i data-lucide="zap" class="w-4 h-4"></i></button>`:''}</div></div>`;
+        return `<div class="mobile-case-card"><div class="mobile-case-header"><div><div class="flex items-center"><button onclick="window.openCasePreview('${r.id}', event)" class="mobile-case-id bg-transparent border-0 p-0 cursor-pointer hover:underline" title="點擊預覽案件詳情">${r.displayId||r.caseNumber||''}</button><span class="mobile-status-badge ${statusLbl.color}">${statusLbl.text}</span></div><button onclick="window.openCasePreview('${r.id}', event)" class="mobile-borrower-name ${borrowerColorClass} bg-transparent border-0 p-0 text-left cursor-pointer hover:underline" title="點擊預覽案件詳情">${r.borrower||''}</button><div class="mobile-payment-status ${paymentStatusClass}"><i data-lucide="${paymentStatusIcon}" class="w-3 h-3 mr-1"></i>${paymentStatusText}${lastPayHtml}</div></div></div><div class="mobile-case-details"><div class="mobile-detail-item"><span class="mobile-detail-label">放款日期</span><span class="mobile-detail-value">${r.date||''}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">借款金額</span><span class="mobile-detail-value">$${formatNumber(r.loanAmount||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">欠款</span><span class="mobile-detail-value text-red-600 font-bold">$${formatNumber(calc.arrears||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">在外本金</span><span class="mobile-detail-value">$${formatNumber(calc.outstanding||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">${r.status==='5'?'協商每期':'每期應繳'}</span><span class="mobile-detail-value ${r.status==='5'?'text-purple-600 font-bold':''}">$${formatNumber(termAmount)}</span></div>${r.status==='5'?`<div class="mobile-detail-item"><span class="mobile-detail-label text-purple-600">協商本金</span><span class="mobile-detail-value text-purple-600 font-bold">$${formatNumber(r.negotiationPrincipal||0)}</span></div>`:`<div class="mobile-detail-item"><span class="mobile-detail-label">利率</span><span class="mobile-detail-value">${r.interestRate||0}%</span></div>`}</div><div class="mobile-case-actions"><button onclick="window.handlePaymentStatusClick('${r.id}')" class="mobile-action-button ${isPaid?'bg-emerald-100 text-emerald-600 hover:bg-emerald-200':'bg-red-100 text-red-600 hover:bg-red-200'}" title="還款入帳"><i data-lucide="banknote" class="w-4 h-4"></i></button><button onclick="window.startEdit('${r.id}')" class="mobile-action-button bg-blue-100 text-blue-600 hover:bg-blue-200" title="編輯"><i data-lucide="edit-2" class="w-4 h-4"></i></button><button onclick="window.handleDelete('${r.id}')" class="mobile-action-button bg-red-100 text-red-600 hover:bg-red-200" title="刪除"><i data-lucide="trash-2" class="w-4 h-4"></i></button>${((state.isAdmin||r.ownerUid===state.currentUserUid)&&!state.isDemoMode)?`<button onclick="window.forceDeleteCase('${r.id}')" class="mobile-action-button bg-red-200 text-red-800 hover:bg-red-300 border border-red-300" title="強制刪除（管理員）"><i data-lucide="zap" class="w-4 h-4"></i></button>`:''}</div></div>`;
     }).join('');
 };
 window.refreshListUI = () => {
+    // 先記錄捲軸位置 (re-render 後會復原，避免頁面跳回頂部)
+    const desktopEl = document.querySelector('.desktop-table-view');
+    const mobileEl = document.getElementById('mobileListContainer');
+    const savedDesktopScroll = desktopEl ? desktopEl.scrollTop : 0;
+    const savedMobileScroll = mobileEl ? mobileEl.scrollTop : 0;
     const tbody = document.getElementById('loanListBody');
     const mobileContainer = document.getElementById('mobileListContainer');
     const totalInfoSpan = document.getElementById('listTotalInfo');
@@ -1512,7 +1841,8 @@ window.refreshListUI = () => {
                         content = `<div class="flex space-x-2 justify-center items-center"><button onclick="window.startEdit('${r.id}')" class="text-blue-600 hover:text-blue-800 bg-blue-50 p-1 rounded" title="編輯"><i data-lucide="edit-2" class="w-4 h-4"></i></button><button onclick="window.handleDelete('${r.id}')" class="text-red-600 hover:text-red-800 bg-red-50 p-1 rounded" title="刪除整筆案件"><i data-lucide="trash-2" class="w-4 h-4"></i></button>${((state.isAdmin||r.ownerUid===state.currentUserUid)&&!state.isDemoMode)?`<button onclick="window.forceDeleteCase('${r.id}')" class="text-red-700 hover:text-red-900 bg-red-100 p-1 rounded border border-red-300" title="強制刪除（管理員）"><i data-lucide="zap" class="w-4 h-4"></i></button>`:''}</div>`;
                     } else if (field.key === 'status') content = `<span class="px-2 py-1 rounded text-xs ${statusLbl.color}">${statusLbl.text}</span>`;
                     else if (field.key === 'repaidTerms') content = `<div class="cursor-pointer text-blue-600 font-bold hover:underline flex items-center justify-center" onclick="window.openModal('schedule', '${r.id}')" title="點擊查看還款日程">${parseSchedule(r.schedule).length} <i data-lucide="calendar-days" class="w-3 h-3 ml-1"></i></div>`;
-                    else if (field.key === 'borrower') content = `<span class="${borrowerColorClass} font-bold">${val}</span>`;
+                    else if (field.key === 'caseNumber') content = `<button onclick="window.openCasePreview('${r.id}', event)" class="font-mono font-bold text-blue-600 hover:underline bg-transparent border-0 cursor-pointer p-0" title="點擊預覽案件詳情">${val}</button>`;
+                    else if (field.key === 'borrower') content = `<button onclick="window.openCasePreview('${r.id}', event)" class="${borrowerColorClass} font-bold hover:underline bg-transparent border-0 cursor-pointer p-0" title="點擊預覽案件詳情">${val}</button>`;
                     else if (field.isEditable) {
                         const icon = field.key === 'note' ? 'file-pen-line' : 'calendar-days';
                         content = `<button onclick="window.openModal('${field.key}', '${r.id}')" class="flex items-center justify-center text-gray-500 hover:text-blue-600 bg-gray-100 hover:bg-blue-50 px-3 py-1 rounded-md text-xs transition-colors mx-auto"><i data-lucide="${icon}" class="w-3 h-3 mr-1"></i>檢視/編輯</button>`;
@@ -1554,6 +1884,13 @@ window.refreshListUI = () => {
         if (state.activeCasesFilter && !state.statusFilter) filtered = filtered.filter(r => r.status==='1'||r.status==='2'||r.status==='3'||r.status==='5');
         totalInfoSpan.textContent = `共 ${filtered.length} 筆案件`;
     }
+    // 復原捲軸位置 (在 rAF 中進行，確保 DOM 查詢到的是新的元素)
+    requestAnimationFrame(() => {
+        const newDesktopEl = document.querySelector('.desktop-table-view');
+        if (newDesktopEl) newDesktopEl.scrollTop = savedDesktopScroll;
+        const newMobileEl = document.getElementById('mobileListContainer');
+        if (newMobileEl) newMobileEl.scrollTop = savedMobileScroll;
+    });
 };
 window.changeViewingUser = (uid) => {
     if (!state.isAdmin) return;
@@ -1643,12 +1980,274 @@ const showIncomeDetailModal = (period, isMonth, totalAmount) => {
     document.body.insertAdjacentHTML('beforeend', modalHtml);
     lucide.createIcons();
 };
+
+// === 呆帳趨勢 (「各月底待追回金額」模型) ===
+// 規則：
+//   - 取狀態 3 / 4 / 5 的案件
+//   - 呆帳發生點 = 最後繳款日的下一個月 (沒有的話用放款日)
+//   - 狀態 3 / 4：金額不動 (以實際 arrears / outstandingPrincipal 為準)
+//   - 狀態 5：依 schedule 實際還款記錄，計算各月底剩餘
+//   - 表格每個月的數字 = 該月底「待追回的呆帳金額」總和
+//   - 沒日期的案件：不計入過去月份，只出現在「現在這個月」(代表我們不知道何時開始)
+// 呆帳起始月 = 最後一次「本金+利息都繳」的下一個月
+// - 狀態 5 (協商)：協商期間只繳本金沒繳利息，所以「最後一次本金+利息都繳」= 協商前的最後一次正常還款
+// - 狀態 3/4：找最後一次正常還款
+// - 找不到任何正常還款：fallback 到 record.date
+const getBadDebtStartDate = (record) => {
+    const tryParse = (val) => {
+        if (!val) return null;
+        if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
+        const d = new Date(String(val).replace(/\//g, '-'));
+        return isNaN(d.getTime()) ? null : d;
+    };
+    // 用 schedule 找最後一次「本金>0 且 利息>0」的日期
+    const scheduleStr = String(record.schedule || '');
+    if (scheduleStr.trim()) {
+        const entries = parseSchedule(scheduleStr);
+        const fullPayments = entries
+            .filter(e => e.date && (e.principal || 0) > 0 && (e.interest || 0) > 0)
+            .map(e => e.date)
+            .sort((a, b) => a - b);
+        if (fullPayments.length > 0) {
+            const lastFull = fullPayments[fullPayments.length - 1];
+            const next = new Date(lastFull.getFullYear(), lastFull.getMonth() + 1, 1);
+            return next;
+        }
+    }
+    // 找不到任何正常還款：fallback 到 record.date (視為開始月)
+    const d2 = tryParse(record.date);
+    if (d2) return new Date(d2.getFullYear(), d2.getMonth(), 1);
+    return null;
+};
+const computeBadDebtTrend = () => {
+    let targetRecords = state.records;
+    if (state.isDemoMode) targetRecords = state.records.filter(r => r.ownerUid === 'demo');
+    else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) targetRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
+    else if (!state.isAdmin && !state.isDemoMode) targetRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
+    // 取狀態 3 / 4 / 5 (用 String 轉換相容 number)
+    const badDebtCases = targetRecords.filter(r => {
+        const s = String(r.status);
+        return s === '3' || s === '4' || s === '5';
+    });
+    // 計算每個案件的起始月份與衰減資訊 (不再過濾掉沒有日期的)
+    const cases = badDebtCases.map(record => {
+        const startDate = getBadDebtStartDate(record);
+        // ★ 改用 calculateDerivedData 算 arrears (與 Dashboard 一致)
+        // Dashboard 的「呆帳金額」= sum(calc.arrears for status 3/4/5)
+        // 用戶規則：呆帳應該有欠款；如已還完應該是 status 0
+        let calc;
+        try { calc = calculateDerivedData(record); } catch (e) { calc = { arrears: 0 }; }
+        const currentArrears = Math.max(0, Number(calc.arrears) || 0);
+        // ★ 所有狀態都拿 schedule entries 以便反推歷史月份的還款軌跡
+        // 狀態 3：壞帳有時會在結清前慢慢還款
+        // 狀態 4：結算後可能也會繼續慢慢還
+        // 狀態 5：協商按 schedule 還款
+        const scheduleEntries = parseSchedule(record.schedule || '').filter(e => e.date && (e.principal || 0) > 0).sort((a, b) => a.date - b.date);
+        // ★ 執行狀態 (僅限狀態 3)：有 'completed' 表示執行已結案，應排除
+        const isExecuted = String(record.executionStatus || '') === 'completed';
+        return {
+            record,
+            startDate, // 可能是 null (無日期)
+            loanAmount: Number(record.loanAmount) || 0,
+            currentArrears, // 當前待追回金額 (與 Dashboard badDebtAmount 一致)
+            scheduleEntries,
+            isStatus3: String(record.status) === '3',
+            isStatus4: String(record.status) === '4',
+            isStatus5: String(record.status) === '5',
+            isExecuted  // 強制執行已結案 → 排除
+        };
+    });
+    // ★ 列出每件案件的 currentArrears，方便驗證是否跟 Dashboard 一致
+    console.log('[呆帳趨勢] 案件 currentArrears:', cases.map(c => `${c.record.displayId || c.record.caseNumber} status=${c.record.status} arrears=${c.currentArrears}`).join('\n  '));
+    const totalArrears = cases.reduce((s, c) => s + c.currentArrears, 0);
+    console.log(`[呆帳趨勢] 全部案件 currentArrears 總和: ${totalArrears.toLocaleString()}`);
+    if (cases.length === 0) {
+        console.warn('[呆帳趨勢] 找不到任何狀態 3/4/5 的案件');
+        return { months: [], monthData: [], years: [], yearData: [] };
+    }
+    // ★ debug 訊息 (跟据問題需要)
+    const noDateCases = cases.filter(c => !c.startDate);
+    console.log(`[呆帳趨勢] 總呆帳案件: ${cases.length} 件, 其中無日期: ${noDateCases.length} 件`);
+    if (noDateCases.length > 0) {
+        console.log('[呆帳趨勢] 無日期案件清單:', noDateCases.map(c => `${c.record.displayId || c.record.caseNumber || c.record.id} (${c.record.borrower}, status=${c.record.status}, date=${JSON.stringify(c.record.date)}, lastRepayment=${JSON.stringify(c.record.lastRepaymentDate)})`));
+    }
+    // 時間範圍：有日期的案件最早月 ~ 現在
+    const datedCases = cases.filter(c => c.startDate);
+    const minStart = datedCases.length > 0
+        ? datedCases.reduce((a, c) => c.startDate < a ? c.startDate : a, datedCases[0].startDate)
+        : new Date();
+    const now = new Date();
+    const months = [];
+    const cursor = new Date(minStart.getFullYear(), minStart.getMonth(), 1);
+    let safety = 0;
+    while (safety++ < 240) {
+        const key = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`;
+        months.push(key);
+        if (cursor.getFullYear() === now.getFullYear() && cursor.getMonth() === now.getMonth()) break;
+        cursor.setMonth(cursor.getMonth() + 1);
+    }
+    const lastMonth = months[months.length - 1];
+    // 計算每個月的總金額
+    // ★ 用戶規則：
+    //   - 件數 = 全部狀態 3/4/5 (不過濾 balance) - 但排除已執行結案的
+    //   - 金額：所有狀態都用 schedule 反推到該月底 → 看到完整還款軌跡
+    //       初始金額 (起始月)：
+    //         狀態 3/5 = loanAmount - 進入呆帳前已還本金
+    //         狀態 4 = record.arrears (手動設定的結算金額)
+    //   - 起始月 = 最後一次本金+利息都繳的下一個月
+    const monthData = months.map(monthKey => {
+        const [y, mo] = monthKey.split('-').map(Number);
+        const monthEnd = new Date(y, mo, 0, 23, 59, 59);
+        let count = 0, amount = 0, newCount = 0, newAmount = 0;
+        cases.forEach(({ record, startDate, currentArrears, loanAmount, scheduleEntries, isStatus3, isStatus4, isStatus5, isExecuted }) => {
+            // ★ 強制執行已結案 → 排除
+            if (isExecuted) return;
+            let includeThisMonth = false;
+            let startKey = null;
+            if (startDate) {
+                startKey = `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}`;
+                if (monthKey >= startKey) includeThisMonth = true;
+            } else {
+                // 沒日期的案件：只出現在「現在這個月」
+                if (monthKey === lastMonth) includeThisMonth = true;
+            }
+            if (!includeThisMonth) return;
+            // 計算該月底的待追回金額
+            // ★ 歷史月份：用 schedule 反推 → 看到還款遞減
+            // ★ 當月：用 currentArrears → 與 Dashboard badDebtAmount 一致
+            let balance;
+            if (scheduleEntries.length > 0 && startDate && monthKey !== lastMonth) {
+                // 歷史月份：schedule 反推
+                let initial;
+                if (isStatus4) {
+                    // 狀態 4：用使用者手動設定的結算金額
+                    initial = Math.max(0, Number(record.arrears) || 0);
+                } else {
+                    // 狀態 3 / 5：loanAmount - 進入呆帳前已還本金
+                    const paidBefore = scheduleEntries
+                        .filter(e => e.date < startDate)
+                        .reduce((s, e) => s + (e.principal || 0), 0);
+                    initial = Math.max(0, loanAmount - paidBefore);
+                }
+                const paidAfter = scheduleEntries
+                    .filter(e => e.date >= startDate && e.date <= monthEnd)
+                    .reduce((s, e) => s + (e.principal || 0), 0);
+                balance = Math.max(0, initial - paidAfter);
+            } else {
+                // 當月 或 沒 schedule：用 currentArrears (與 Dashboard 一致)
+                balance = currentArrears;
+            }
+            count++;
+            amount += balance;
+            if (startKey && monthKey === startKey) {
+                newCount++;
+                // 本期新增金額 = 剛成為呆帳時的金額
+                let initialAmount;
+                if (isStatus4) {
+                    initialAmount = Math.max(0, Number(record.arrears) || 0);
+                } else if (scheduleEntries.length > 0 && startDate) {
+                    const paidBefore = scheduleEntries
+                        .filter(e => e.date < startDate)
+                        .reduce((s, e) => s + (e.principal || 0), 0);
+                    initialAmount = Math.max(0, loanAmount - paidBefore);
+                } else {
+                    initialAmount = currentArrears;
+                }
+                newAmount += initialAmount;
+            }
+        });
+        return { count, amount, newCount, newAmount };
+    });
+    // 年資料 = 該年最後一個月的值
+    const yearSet = new Set(months.map(m => m.split('-')[0]));
+    const years = Array.from(yearSet).sort();
+    const yearData = years.map(y => {
+        const yearMonths = months.filter(m => m.startsWith(y));
+        const lastMonthOfYear = yearMonths[yearMonths.length - 1];
+        const lastIdx = months.indexOf(lastMonthOfYear);
+        return monthData[lastIdx];
+    });
+    return { months, monthData, years, yearData };
+};
+const getBadDebtDetailForPeriod = (period, isMonth) => {
+    let targetRecords = state.records;
+    if (state.isDemoMode) targetRecords = state.records.filter(r => r.ownerUid === 'demo');
+    else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) targetRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
+    else if (!state.isAdmin && !state.isDemoMode) targetRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
+    // 狀態 3/4/5 全算
+    const badDebtCases = targetRecords.filter(r => {
+        const s = String(r.status);
+        return s === '3' || s === '4' || s === '5';
+    });
+    const now = new Date();
+    const nowKey = isMonth
+        ? `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+        : `${now.getFullYear()}`;
+    const results = [];
+    badDebtCases.forEach(record => {
+        // ★ 強制執行已結案 → 排除
+        if (String(record.executionStatus || '') === 'completed') return;
+        const startDate = getBadDebtStartDate(record);
+        let calc;
+        try { calc = calculateDerivedData(record); } catch (e) { calc = { arrears: 0 }; }
+        const currentArrears = Math.max(0, Number(calc.arrears) || 0);
+        let include = false;
+        if (startDate) {
+            const startKey = isMonth
+                ? `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}`
+                : `${startDate.getFullYear()}`;
+            // 案件起始年/月 <= 查詢期，表示該查詢期有此案件 (累計型)
+            if (startKey <= period) include = true;
+        } else {
+            // 沒日期的案件：算在「現在」這個期
+            if (period === nowKey) include = true;
+        }
+        if (include) results.push({ record, currentArrears });
+    });
+    // 欠款降冪排序
+    results.sort((a, b) => b.currentArrears - a.currentArrears);
+    return results;
+};
+const showBadDebtDetailModal = (period, isMonth, totalAmount, totalCount) => {
+    const details = getBadDebtDetailForPeriod(period, isMonth);
+    if (details.length === 0) { window.showError(`此${isMonth?'月份':'年份'}無待追回紀錄`); return; }
+    const periodLabel = isMonth ? period : `${period} 年`;
+    // 桌面版表格
+    const tableRows = details.map(({record, currentArrears})=>{ const displayId=record.displayId||record.caseNumber||''; const statusLbl=getStatusLabel(record.status); return `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-mono">${displayId}</td><td class="p-2 font-bold text-gray-800">${record.borrower||''}</td><td class="p-2 text-right font-mono font-bold text-rose-600">$${formatNumber(currentArrears)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${statusLbl.color}">${statusLbl.text}</span></td><td class="p-2 text-center"><button onclick="window.openCasePreview('${record.id}', event); setTimeout(()=>document.getElementById('badDebtDetailModal')?.remove(),100);" class="text-blue-600 hover:underline text-xs">查看</button></td></tr>`; }).join('');
+    // 手機版 card 列表
+    const cardItems = details.map(({record, currentArrears})=>{ const displayId=record.displayId||record.caseNumber||''; const statusLbl=getStatusLabel(record.status); return `<div class="border border-gray-200 rounded-lg p-3 mb-2 hover:bg-gray-50 transition-colors"><div class="flex justify-between items-start mb-2"><div class="flex-1 min-w-0"><div class="flex items-center space-x-2 mb-1"><span class="font-mono text-xs text-gray-500">${displayId}</span><span class="px-2 py-0.5 rounded text-xs ${statusLbl.color}">${statusLbl.text}</span></div><div class="font-bold text-gray-800 truncate">${record.borrower||''}</div></div><div class="text-right shrink-0 ml-2"><div class="text-xs text-gray-500">待追回</div><div class="font-mono font-bold text-rose-600">$${formatNumber(currentArrears)}</div></div></div><button onclick="window.openCasePreview('${record.id}', event); setTimeout(()=>document.getElementById('badDebtDetailModal')?.remove(),100);" class="w-full mt-1 py-1.5 text-sm text-blue-600 border border-blue-200 rounded hover:bg-blue-50 flex items-center justify-center"><i data-lucide="eye" class="w-3 h-3 mr-1"></i>查看詳情</button></div>`; }).join('');
+    const modalHtml = `<div id="badDebtDetailModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4 animate-fade-in backdrop-blur-sm"><div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[95vh] sm:max-h-[85vh] flex flex-col"><div class="p-3 sm:p-4 flex justify-between items-center text-white shrink-0 bg-gradient-to-r from-pink-600 to-rose-600 rounded-t-xl"><h3 class="font-bold flex items-center text-sm sm:text-base"><i data-lucide="trending-down" class="w-4 h-4 sm:w-5 sm:h-5 mr-2"></i>${periodLabel} 待追回明細<div class="ml-2 text-xs sm:text-sm font-normal opacity-90">(${totalCount} 件 / $${formatNumber(totalAmount)})</div></h3><button onclick="document.getElementById('badDebtDetailModal').remove()" class="hover:bg-white/20 p-1 rounded"><i data-lucide="x" class="w-5 h-5"></i></button></div><div class="p-2 sm:p-4 overflow-y-auto flex-1"><div class="detail-card-view">${cardItems}</div><table class="w-full text-left border-collapse detail-table-view"><thead class="bg-gray-50 text-gray-500 text-xs uppercase sticky top-0"><tr><th class="p-2">案件編號</th><th class="p-2">借款人</th><th class="p-2 text-right">待追回欠款</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr></thead><tbody class="divide-y divide-gray-100">${tableRows}</tbody></table></div><div class="p-3 sm:p-4 border-t border-gray-100 bg-gray-50 text-right shrink-0"><button onclick="document.getElementById('badDebtDetailModal').remove()" class="px-4 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 text-sm">關閉</button></div></div></div>`;
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    lucide.createIcons();
+};
 window.openTrendModal = () => {
     updateState({ showTrendModal: true });
     setTimeout(() => drawTrendChart(), 50);
 };
 window.switchTrendView = (view) => { state.trendView = view; drawTrendChart(); };
 window.closeTrendModal = () => updateState({ showTrendModal: false });
+
+// 走 body-level 容器避免 renderApp 重畫列表造成捲軸跳動
+const getBadDebtTrendContainer = () => {
+    let c = document.getElementById('bad-debt-trend-container');
+    if (!c) { c = document.createElement('div'); c.id = 'bad-debt-trend-container'; document.body.appendChild(c); }
+    return c;
+};
+const renderBadDebtTrendToBody = () => {
+    const c = getBadDebtTrendContainer();
+    if (state.showBadDebtTrendModal) {
+        c.innerHTML = `<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4 animate-fade-in backdrop-blur-sm" onclick="window.closeBadDebtTrendModal()"><div class="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[95vh] sm:max-h-[90vh] flex flex-col" onclick="event.stopPropagation()"><div class="p-3 sm:p-4 flex justify-between items-center text-white shrink-0 bg-gradient-to-r from-pink-600 to-rose-600 rounded-t-xl"><h3 class="font-bold flex items-center text-sm sm:text-base"><i data-lucide="trending-down" class="w-4 h-4 sm:w-5 sm:h-5 mr-2"></i>呆帳趨勢圖</h3><button onclick="window.closeBadDebtTrendModal()" class="hover:bg-white/20 p-1 rounded"><i data-lucide="x" class="w-5 h-5"></i></button></div><div class="p-2 sm:p-4 border-b border-gray-200 flex justify-center space-x-2 sm:space-x-4"><button onclick="window.switchBadDebtTrendView('month')" class="px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg text-xs sm:text-sm font-medium ${state.badDebtTrendView==='month'?'bg-pink-600 text-white':'bg-gray-200 text-gray-700 hover:bg-gray-300'}">近12個月</button><button onclick="window.switchBadDebtTrendView('year')" class="px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg text-xs sm:text-sm font-medium ${state.badDebtTrendView==='year'?'bg-pink-600 text-white':'bg-gray-200 text-gray-700 hover:bg-gray-300'}">歷年</button></div><div class="flex-1 p-2 sm:p-4 overflow-hidden"><div id="badDebtTrendChart" class="trend-chart"></div></div></div></div>`;
+        document.body.style.overflow = 'hidden';
+        if (window.lucide) window.lucide.createIcons();
+        setTimeout(() => drawBadDebtTrendChart(), 50);
+    } else {
+        c.innerHTML = '';
+        document.body.style.overflow = '';
+    }
+};
+window.openBadDebtTrendModal = () => { state.showBadDebtTrendModal = true; renderBadDebtTrendToBody(); };
+window.switchBadDebtTrendView = (view) => { state.badDebtTrendView = view; drawBadDebtTrendChart(); };
+window.closeBadDebtTrendModal = () => { state.showBadDebtTrendModal = false; renderBadDebtTrendToBody(); };
 let trendChartInstance = null;
 const drawTrendChart = () => {
     const chartDom = document.getElementById('trendChart');
@@ -1682,6 +2281,69 @@ const drawTrendChart = () => {
     window.addEventListener('resize', () => trendChartInstance?.resize());
 };
 
+// === 呆帳趨勢圖繪製 (上下兩張子圖 / bar) ===
+let badDebtTrendChartInstance = null;
+const drawBadDebtTrendChart = () => {
+    const chartDom = document.getElementById('badDebtTrendChart');
+    if (!chartDom) return;
+    if (badDebtTrendChartInstance) badDebtTrendChartInstance.dispose();
+    const { months, monthData, years, yearData } = computeBadDebtTrend();
+    const isMonthView = state.badDebtTrendView === 'month';
+    const xAxisData = isMonthView ? months : years;
+    const dataArr = isMonthView ? monthData : yearData;
+    // 累計值
+    const cumCountData = dataArr.map(d => d.count);
+    const cumAmountData = dataArr.map(d => d.amount);
+    const option = {
+        title: { text: isMonthView?'近12個月呆帳待追回 (件數 + 金額)':'歷年呆帳待追回 (件數 + 金額)', left:'center', top: 2, textStyle:{ fontSize:13, fontWeight:'normal' } },
+        tooltip: {
+            trigger:'axis',
+            formatter: (params) => {
+                if (!params || params.length === 0) return '';
+                const period = params[0].axisValue;
+                const d = dataArr[params[0].dataIndex];
+                return `<div style="font-weight:bold;margin-bottom:4px;">${period}${isMonthView?'':' 年'}</div>
+                    <div style="color:#9ca3af;font-size:11px;margin-bottom:4px;">該月底仍待追回的呆帳餘額</div>
+                    <div style="color:#9ca3af;font-size:11px;margin-bottom:4px;">本期新增：${d.newCount} 件 / $${formatNumber(d.newAmount)}</div>
+                    <div style="color:#ec4899;">● 待追回件數：<b>${d.count}</b> 件</div>
+                    <div style="color:#be123c;">● 待追回金額：<b>$${formatNumber(d.amount)}</b></div>`;
+            }
+        },
+        legend: { data: ['待追回件數', '待追回金額'], top: 28 },
+        // ★ 上下兩張子圖：上面件數 bar，下面金額 line
+        grid: [
+            { left: '8%', right: '8%', top: 58, height: '32%', containLabel: true },  // 上圖：件數
+            { left: '8%', right: '8%', top: '58%', height: '32%', containLabel: true }   // 下圖：金額
+        ],
+        xAxis: [
+            { type:'category', data:xAxisData, gridIndex: 0, axisLabel:{ rotate:45, interval:0, fontSize: 10 } },
+            { type:'category', data:xAxisData, gridIndex: 1, axisLabel:{ rotate:45, interval:0, fontSize: 10 } }
+        ],
+        yAxis: [
+            { type:'value', name:'件數', gridIndex: 0, nameTextStyle:{ padding:[0,0,5,0] }, axisLabel:{ color:'#be123c', fontSize: 10 } },
+            { type:'value', name:'金額 (NTD)', gridIndex: 1, nameTextStyle:{ padding:[0,0,5,0] }, axisLabel:{ formatter:(v)=>`$${formatNumber(v)}`, color:'#9d174d', fontSize: 10 } }
+        ],
+        series: [
+            { name:'待追回件數', data:cumCountData, type:'bar', xAxisIndex: 0, yAxisIndex: 0, barWidth:'40%', itemStyle:{ color:'#ec4899', borderRadius:[4,4,0,0] } },
+            { name:'待追回金額', data:cumAmountData, type:'line', xAxisIndex: 1, yAxisIndex: 1, smooth:true, symbol:'circle', symbolSize:6, lineStyle:{ width:2.5, color:'#be123c' }, itemStyle:{ color:'#be123c' } }
+        ],
+        dataZoom: [{ type:'slider', start:0, end:100, bottom:2, height: 18, xAxisIndex:[0,1] }, { type:'inside', start:0, end:100, xAxisIndex:[0,1] }],
+        toolbox: { feature: { saveAsImage: { title:'儲存為圖片' } } }
+    };
+    badDebtTrendChartInstance = echarts.init(chartDom);
+    badDebtTrendChartInstance.setOption(option);
+    badDebtTrendChartInstance.off('click');
+    badDebtTrendChartInstance.on('click', (params) => {
+        if (params.componentType === 'series' && params.dataIndex !== undefined) {
+            const period = xAxisData[params.dataIndex];
+            const data = dataArr[params.dataIndex];
+            // 只要該期有案件累計 (count > 0) 就帶出明細
+            if (period && data && data.count > 0) showBadDebtDetailModal(period, isMonthView, data.amount, data.count);
+        }
+    });
+    window.addEventListener('resize', () => badDebtTrendChartInstance?.resize());
+};
+
 function renderAuth() {
     return `<div class="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 flex items-center justify-center p-4 font-sans"><div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-fade-in p-8"><div class="text-center mb-8"><div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-blue-100 mb-4"><i data-lucide="wallet" class="w-8 h-8 text-blue-600"></i></div><h2 class="text-2xl font-bold text-gray-800">${state.isRegistering?"註冊新帳號":"登入財務系統"}</h2><p class="text-xs text-gray-500 mt-2">${state.isRegistering?"設定您的專屬帳號ID與綁定Email":"使用您的帳號ID登入"}</p></div><form onsubmit="window.handleAuth(event)" class="space-y-6"><div><label class="block text-sm font-medium text-gray-700 mb-1">帳號 (ID)</label><div class="relative"><span class="absolute left-3 top-3 text-gray-400"><i data-lucide="user" class="w-5 h-5"></i></span><input type="text" id="authUsername" class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="請輸入帳號" required></div></div>${state.isRegistering?`<div><label class="block text-sm font-medium text-gray-700 mb-1">綁定 Email</label><div class="relative"><span class="absolute left-3 top-3 text-gray-400"><i data-lucide="at-sign" class="w-5 h-5"></i></span><input type="email" id="authEmail" class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="name@example.com" required></div></div>`:''}<div><label class="block text-sm font-medium text-gray-700 mb-1">密碼</label><div class="relative"><span class="absolute left-3 top-3 text-gray-400"><i data-lucide="lock" class="w-5 h-5"></i></span><input type="password" id="authPassword" class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="????????" required></div></div>${state.isRegistering?`<div><label class="block text-sm font-medium text-gray-700 mb-1">確認密碼</label><div class="relative"><span class="absolute left-3 top-3 text-gray-400"><i data-lucide="lock" class="w-5 h-5"></i></span><input type="password" id="authConfirmPassword" class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="再次輸入密碼" required></div></div>`:''}<button type="submit" ${state.authLoading?'disabled':''} class="w-full text-white ${state.isRegistering?'bg-emerald-600 hover:bg-emerald-700':'bg-blue-600 hover:bg-blue-700'} py-3 rounded-lg font-bold transition-all shadow-md flex justify-center items-center disabled:opacity-50">${state.authLoading?'<i data-lucide="refresh-cw" class="w-5 h-5 mr-2 animate-spin"></i>':(state.isRegistering?'<i data-lucide="user-plus" class="w-5 h-5 mr-2"></i> 立即註冊':'<i data-lucide="log-in" class="w-5 h-5 mr-2"></i> 登入系統')}</button></form><div class="mt-6 text-center text-sm space-y-4"><div><span class="text-gray-500">${state.isRegistering?"已經有帳號了嗎？":"還沒有帳號嗎？"}</span><button onclick="window.toggleAuthMode()" class="ml-2 text-blue-600 hover:text-blue-800 font-bold hover:underline focus:outline-none">${state.isRegistering?"直接登入":"註冊新帳號"}</button></div><div class="pt-2 border-t border-gray-100"><button onclick="window.enterDemoMode()" class="text-gray-400 hover:text-gray-600 text-xs flex items-center justify-center w-full hover:underline"><i data-lucide="log-in" class="w-3 h-3 mr-1"></i> 先行試用 (免登入/不儲存資料)</button></div></div></div></div>`;
 }
@@ -1698,7 +2360,7 @@ function renderDashboard(stats) {
         const colSpan = c.width === 2 ? 'lg:col-span-2' : 'lg:col-span-1';
         return `<div class="${colorStyle.bg} ${colSpan} border ${colorStyle.border} rounded-xl p-3 shadow-sm relative overflow-hidden flex flex-col justify-between h-full draggable-card hover:shadow-md transition-transform hover:scale-[1.01]" draggable="true" ondragstart="window.handleDragStart(event, '${c.id}')" ondragover="window.handleDragOver(event)" ondrop="window.handleDrop(event, '${c.id}')" onclick="window.openModalList('${c.id}')"><div class="flex justify-between items-start z-10"><span class="text-base font-bold text-gray-700">${config.label}</span><div class="flex items-center space-x-1"><button onclick="window.changeCardColor(event, '${c.id}')" class="p-1 hover:bg-black/10 rounded" title="更換顏色"><i data-lucide="palette" class="w-3 h-3 opacity-50"></i></button><button onclick="window.resizeCard(event, '${c.id}')" class="p-1 hover:bg-black/10 rounded" title="調整大小"><i data-lucide="${c.width===1?'maximize-2':'minimize-2'}" class="w-3 h-3 opacity-50"></i></button><div class="p-1.5 rounded-lg ${colorStyle.iconBg}"><i data-lucide="${config.icon}" class="w-4 h-4 ${colorStyle.iconColor}"></i></div></div></div><div class="mt-1 z-10"><span class="text-2xl sm:text-3xl font-extrabold tracking-tight ${colorStyle.text}">${config.isCurrency?'<span class="text-lg mr-1">$</span>':''}${formatNumber(config.value)}${!config.isCurrency?'<span class="text-lg ml-1">件</span>':''}</span></div></div>`;
     }).join('');
-    return `<div class="animate-fade-in space-y-6"><div class="bg-white border-b border-gray-200 p-4 flex justify-between items-center"><div class="flex items-center"><button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁"><i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i></button><div><h2 class="text-xl font-bold text-gray-800">財務營運儀表板</h2><p class="text-sm text-gray-500 mt-1"></p></div></div><div class="flex items-center space-x-3">${state.history.length>0?`<button onclick="window.goBack()" class="flex items-center px-4 py-2 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg transition-colors font-medium shadow-sm"><i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁</button>`:''}${renderUserSwitcher()}</div></div><div class="grid grid-cols-1 lg:grid-cols-4 gap-3"><div class="lg:col-span-3 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">${cardsHtml}</div><div class="flex flex-col gap-3"><div class="bg-gradient-to-br from-teal-600 to-cyan-700 rounded-xl p-4 shadow-lg border border-transparent flex flex-col justify-center relative overflow-hidden flex-1 min-h-[300px]"><div class="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mr-10 -mt-10 blur-xl"></div><div class="absolute bottom-0 left-0 w-24 h-24 bg-black/10 rounded-full -ml-10 -mb-10 blur-xl"></div><div class="flex items-center mb-4 relative z-10 border-b border-white/20 pb-2"><i data-lucide="database" class="w-6 h-6 text-white mr-2"></i><h3 class="font-bold text-white text-xl tracking-wide">系統案件狀態</h3></div><div class="grid grid-cols-1 sm:grid-cols-2 gap-3 relative z-10 flex-1"><div onclick="window.openModalList('active')" class="bg-emerald-100 backdrop-blur-sm p-3 rounded-xl text-center cursor-pointer hover:bg-emerald-200 transition-all border border-emerald-300 group flex flex-col justify-center"><span class="block text-4xl font-extrabold text-emerald-800 mb-1 group-hover:scale-110 transition-transform">${formatNumber(stats.activeCases)}</span><span class="text-base text-emerald-700 font-bold uppercase tracking-wider">進行中</span></div><div onclick="window.openModalList('unpaid')" class="bg-red-200 p-3 rounded-xl text-center cursor-pointer hover:bg-red-300 transition-all shadow-md group flex flex-col justify-center"><span class="block text-4xl font-extrabold text-red-800 mb-1 group-hover:scale-110 transition-transform">${formatNumber(stats.unpaidCount)}</span><span class="text-lg text-red-700 font-bold uppercase tracking-wider flex items-center justify-center"><i data-lucide="alert-triangle" class="w-4 h-4 mr-1 animate-pulse"></i>本期逾期</span></div><div onclick="window.openModalList('closed')" class="bg-gray-200 p-3 rounded-xl text-center cursor-pointer hover:bg-gray-300 transition-all border border-gray-300 flex flex-col justify-center"><span class="block text-4xl font-bold text-gray-800 mb-1">${formatNumber(stats.normalClosedCount)}</span><span class="text-lg text-gray-600 font-bold uppercase tracking-wider">結案</span></div><div onclick="window.openModalList('badDebt')" class="bg-pink-300 p-3 rounded-xl text-center cursor-pointer hover:bg-pink-400 transition-all shadow-md group flex flex-col justify-center"><span class="block text-4xl font-extrabold text-pink-900 mb-1 group-hover:scale-110 transition-transform">${formatNumber(stats.activeBadDebtCount+stats.closedBadDebtCount)}</span><span class="text-lg text-pink-800 font-bold uppercase tracking-wider">呆帳</span></div>${stats.hasManagedCases?`<div onclick="window.openModalList('managed')" class="bg-blue-100 p-3 rounded-xl text-center cursor-pointer hover:bg-blue-200 transition-all border border-blue-300 flex flex-col justify-center"><span class="block text-4xl font-extrabold text-blue-800 mb-1">${formatNumber(stats.managedCases)}</span><span class="text-lg text-blue-700 font-bold uppercase tracking-wider">代管中</span></div>`:''}${stats.negotiationCases>0?`<div onclick="window.openModalList('negotiation')" class="bg-purple-100 p-3 rounded-xl text-center cursor-pointer hover:bg-purple-200 transition-all border border-purple-300 flex flex-col justify-center"><span class="block text-4xl font-extrabold text-purple-800 mb-1">${formatNumber(stats.negotiationCases)}</span><span class="text-lg text-purple-700 font-bold uppercase tracking-wider">協商中</span></div>`:''}</div></div><div class="bg-white rounded-xl p-4 shadow-md border border-gray-200 text-center cursor-pointer hover:shadow-lg transition-all" onclick="window.openTrendModal()"><i data-lucide="trending-up" class="w-8 h-8 text-emerald-600 mx-auto mb-2"></i><h3 class="font-bold text-gray-800">淨收入趨勢圖</h3><p class="text-xs text-gray-500 mt-1">查看歷年/近12個月收入走勢</p></div></div></div></div>`;
+    return `<div class="animate-fade-in space-y-6"><div class="bg-white border-b border-gray-200 p-4 flex justify-between items-center"><div class="flex items-center"><button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁"><i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i></button><div><h2 class="text-xl font-bold text-gray-800">財務營運儀表板</h2><p class="text-sm text-gray-500 mt-1"></p></div></div><div class="flex items-center space-x-3">${state.history.length>0?`<button onclick="window.goBack()" class="flex items-center px-4 py-2 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg transition-colors font-medium shadow-sm"><i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁</button>`:''}${renderUserSwitcher()}</div></div><div class="grid grid-cols-1 lg:grid-cols-4 gap-3"><div class="lg:col-span-3 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">${cardsHtml}</div><div class="flex flex-col gap-3"><div class="bg-gradient-to-br from-teal-600 to-cyan-700 rounded-xl p-4 shadow-lg border border-transparent flex flex-col justify-center relative overflow-hidden flex-1 min-h-[300px]"><div class="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mr-10 -mt-10 blur-xl"></div><div class="absolute bottom-0 left-0 w-24 h-24 bg-black/10 rounded-full -ml-10 -mb-10 blur-xl"></div><div class="flex items-center mb-4 relative z-10 border-b border-white/20 pb-2"><i data-lucide="database" class="w-6 h-6 text-white mr-2"></i><h3 class="font-bold text-white text-xl tracking-wide">系統案件狀態</h3></div><div class="grid grid-cols-1 sm:grid-cols-2 gap-3 relative z-10 flex-1"><div onclick="window.openModalList('active')" class="bg-emerald-100 backdrop-blur-sm p-3 rounded-xl text-center cursor-pointer hover:bg-emerald-200 transition-all border border-emerald-300 group flex flex-col justify-center"><span class="block text-4xl font-extrabold text-emerald-800 mb-1 group-hover:scale-110 transition-transform">${formatNumber(stats.activeCases)}</span><span class="text-base text-emerald-700 font-bold uppercase tracking-wider">進行中</span></div><div onclick="window.openModalList('unpaid')" class="bg-red-200 p-3 rounded-xl text-center cursor-pointer hover:bg-red-300 transition-all shadow-md group flex flex-col justify-center"><span class="block text-4xl font-extrabold text-red-800 mb-1 group-hover:scale-110 transition-transform">${formatNumber(stats.unpaidCount)}</span><span class="text-lg text-red-700 font-bold uppercase tracking-wider flex items-center justify-center"><i data-lucide="alert-triangle" class="w-4 h-4 mr-1 animate-pulse"></i>本期逾期</span></div><div onclick="window.openModalList('closed')" class="bg-gray-200 p-3 rounded-xl text-center cursor-pointer hover:bg-gray-300 transition-all border border-gray-300 flex flex-col justify-center"><span class="block text-4xl font-bold text-gray-800 mb-1">${formatNumber(stats.normalClosedCount)}</span><span class="text-lg text-gray-600 font-bold uppercase tracking-wider">結案</span></div><div onclick="window.openModalList('badDebt')" class="bg-pink-300 p-3 rounded-xl text-center cursor-pointer hover:bg-pink-400 transition-all shadow-md group flex flex-col justify-center"><span class="block text-4xl font-extrabold text-pink-900 mb-1 group-hover:scale-110 transition-transform">${formatNumber(stats.activeBadDebtCount+stats.closedBadDebtCount)}</span><span class="text-lg text-pink-800 font-bold uppercase tracking-wider">呆帳</span></div>${stats.hasManagedCases?`<div onclick="window.openModalList('managed')" class="bg-blue-100 p-3 rounded-xl text-center cursor-pointer hover:bg-blue-200 transition-all border border-blue-300 flex flex-col justify-center"><span class="block text-4xl font-extrabold text-blue-800 mb-1">${formatNumber(stats.managedCases)}</span><span class="text-lg text-blue-700 font-bold uppercase tracking-wider">代管中</span></div>`:''}${stats.negotiationCases>0?`<div onclick="window.openModalList('negotiation')" class="bg-purple-100 p-3 rounded-xl text-center cursor-pointer hover:bg-purple-200 transition-all border border-purple-300 flex flex-col justify-center"><span class="block text-4xl font-extrabold text-purple-800 mb-1">${formatNumber(stats.negotiationCases)}</span><span class="text-lg text-purple-700 font-bold uppercase tracking-wider">協商中</span></div>`:''}</div></div><div class="grid grid-cols-2 gap-3"><div class="bg-white rounded-xl p-3 shadow-md border border-gray-200 text-center cursor-pointer hover:shadow-lg transition-all" onclick="window.openTrendModal()"><i data-lucide="trending-up" class="w-7 h-7 text-emerald-600 mx-auto mb-1"></i><h3 class="font-bold text-gray-800 text-sm">淨收入趨勢圖</h3><p class="text-[10px] text-gray-500 mt-1">歷年/近12月</p></div><div class="bg-white rounded-xl p-3 shadow-md border border-gray-200 text-center cursor-pointer hover:shadow-lg transition-all" onclick="window.openBadDebtTrendModal()"><i data-lucide="trending-down" class="w-7 h-7 text-pink-600 mx-auto mb-1"></i><h3 class="font-bold text-gray-800 text-sm">呆帳趨勢圖</h3><p class="text-[10px] text-gray-500 mt-1">歷年/近12月</p></div></div></div></div></div>`;
 }
 function renderList() {
     const batchDeleteHeader = state.batchDeleteMode?`<th class="p-2 font-semibold text-gray-700 text-sm whitespace-nowrap text-center sticky top-0 z-40 bg-gray-50 border-r border-gray-300" style="min-width:40px;width:40px;left:0;"><input type="checkbox" onclick="window.selectAllVisibleCasesForBatch()" ${state.selectedCasesForBatch.length>0?'checked':''} class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"></th>`:'';
@@ -1721,7 +2383,7 @@ function renderForm() {
     // 已還款期數與最後繳款日
     const repaidCount = isEdit ? parseSchedule(state.editingRecord.schedule || '').length : 0;
     const lastPayDate = isEdit ? getLastRepaymentDateStr(state.editingRecord) : '';
-    return `<div class="max-w-5xl mx-auto bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden animate-fade-in flex flex-col h-[calc(100vh-6rem)]"><div class="bg-white border-b border-gray-200 p-4 flex justify-between items-center"><div class="flex items-center"><button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁"><i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i></button><div><h2 class="text-xl font-bold text-gray-800">${isEdit?'編輯案件':'新增案件'}</h2><p class="text-sm text-gray-500 mt-1">填寫或修改案件資訊</p></div></div><div class="flex items-center space-x-3">${state.history.length>0?`<button onclick="window.goBack()" class="flex items-center px-4 py-2 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg transition-colors font-medium shadow-sm"><i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁</button>`:''}${renderUserSwitcher()}</div></div><div class="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-sm flex-1 overflow-y-auto custom-scrollbar"><div class="lg:col-span-4 bg-gray-50 p-3 rounded-lg border border-gray-200"><h4 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 border-b border-gray-200 pb-1">基本與聯絡資料</h4><div class="grid grid-cols-2 md:grid-cols-4 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">借款人</label><input type="text" id="input_borrower" value="${formData.borrower}" oninput="window.updateFormData('borrower', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">身分證字號</label><input type="text" id="input_idNumber" value="${formData.idNumber}" oninput="window.updateFormData('idNumber', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">工作</label><input type="text" id="input_job" value="${formData.job}" oninput="window.updateFormData('job', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">經辦人</label><input type="text" id="input_agent" value="${formData.agent}" oninput="window.updateFormData('agent', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div class="md:col-span-2"><label class="block text-[10px] text-gray-500 mb-0.5">住址</label><input type="text" id="input_address" value="${formData.address}" oninput="window.updateFormData('address', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">電話</label><input type="text" id="input_telephone" value="${formData.telephone}" oninput="window.updateFormData('telephone', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">手機</label><input type="text" id="input_mobile" value="${formData.mobile}" oninput="window.updateFormData('mobile', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div></div></div><div class="lg:col-span-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3"><div class="lg:col-span-2 bg-blue-50 p-3 rounded-lg border border-blue-100"><h4 class="text-xs font-bold text-blue-800 uppercase tracking-wider mb-2 border-b border-blue-200 pb-1">貸款設定</h4><div class="grid grid-cols-2 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">狀態</label><select onchange="window.updateFormData('status', this.value, true)" class="w-full py-1 px-2 border rounded outline-none bg-white text-sm"><option value="1" ${formData.status=='1'?'selected':''}>1 - 進行中</option>${canUseStatus2?`<option value="2" ${formData.status=='2'?'selected':''}>2 - 代管案件</option>`:''}<option value="3" ${formData.status=='3'?'selected':''}>3 - 呆帳</option><option value="5" ${formData.status=='5'?'selected':''}>5 - 協商中</option><option value="0" ${formData.status=='0'?'selected':''}>0 - 已結案</option><option value="4" ${formData.status=='4'?'selected':''}>4 - 已結案呆帳</option></select></div><div><label class="block text-[10px] text-gray-500 mb-0.5">方式</label><select onchange="window.updateFormData('method', this.value, true)" class="w-full py-1 px-2 border rounded outline-none bg-white text-sm" ${formData.status==='5'?'disabled':''}><option value="叨簿子" ${formData.method=='叨簿子'?'selected':''}>叨簿子</option><option value="設定" ${formData.method=='設定'?'selected':''}>設定</option><option value="票貼" ${formData.method=='票貼'?'selected':''}>票貼</option><option value="小額" ${formData.method=='小額'?'selected':''}>小額</option></select></div><div><label class="block text-[10px] text-gray-500 mb-0.5">借款金額(債權)</label><input type="number" id="input_loanAmount" value="${formData.loanAmount}" oninput="window.updateFormData('loanAmount', this.value)" class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">放款金額(實際)</label><input type="number" id="input_disbursed" value="${formData.disbursed}" oninput="window.updateFormData('disbursed', this.value)" class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">放款日期</label><input type="date" id="input_date" value="${formData.date}" oninput="window.updateFormData('date', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm" /></div></div></div><div class="lg:col-span-2 bg-emerald-50 p-3 rounded-lg border border-emerald-100"><h4 class="text-xs font-bold text-emerald-800 uppercase tracking-wider mb-2 border-b border-emerald-200 pb-1">還款條件</h4><div class="grid grid-cols-3 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">期數</label><input type="number" id="input_terms" value="${formData.terms}" oninput="window.updateFormData('terms', this.value)" ${formData.status==='5'?'disabled':''} class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">利率(%)</label><input type="text" id="input_interestRate" value="${formData.interestRate}" oninput="window.updateFormData('interestRate', this.value)" ${formData.status==='5'?'disabled':''} class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">每期還款日</label><input type="text" id="input_repayDay" value="${formData.repayDay}" oninput="window.updateFormData('repayDay', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm" /></div>${formData.status==='2'?`<div class="col-span-3 border-t border-emerald-200 my-1"></div><div><label class="block text-[10px] text-blue-600 mb-0.5">借款利率 (%)</label><input type="text" id="input_specialRate" value="${formData.specialRate}" oninput="window.updateFormData('specialRate', this.value)" class="w-full py-1 px-2 border border-blue-300 rounded font-mono bg-white text-sm" placeholder="例如: 0.5"></div><div><label class="block text-[10px] text-blue-600 mb-0.5">應付 (給委託人)</label><input type="text" id="input_expectedPayment" value="${formatNumber(formData.expectedPayment||0)}" readonly class="w-full py-1 px-2 border border-blue-300 rounded font-mono bg-blue-50 text-blue-800 text-sm" /></div>`:''}${formData.status==='5'?`<div class="col-span-3 border-t border-purple-200 my-1 pt-2"><h4 class="text-xs font-bold text-purple-700 uppercase tracking-wider mb-1">協商還款設定</h4><div class="grid grid-cols-1 gap-3"><div><label class="block text-[10px] text-purple-600 mb-0.5 font-bold">協商本金 (每期還款)</label><input type="number" id="input_negotiationPrincipal" value="${formData.negotiationPrincipal}" oninput="window.updateFormData('negotiationPrincipal', this.value)" class="w-full py-1 px-2 border border-purple-300 rounded outline-none font-mono bg-purple-50 text-purple-800 text-sm" /><p class="text-[9px] text-purple-500 mt-1">協商案件每期固定還款本金，無利息</p></div></div></div>`:`<div class="col-span-3 grid grid-cols-2 gap-3 mt-1"><div><label class="block text-[10px] text-gray-500 mb-0.5 font-bold">每期本金 (合約)</label><input type="number" id="input_principalPerTerm" value="${formData.principalPerTerm}" oninput="window.updateFormData('principalPerTerm', this.value)" class="w-full py-1 px-2 border rounded outline-none font-mono bg-gray-100 text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5 font-bold">${formData.status==='2'?'管理費':'每期利息'} (合約)</label><input type="number" id="input_interestPerTerm" value="${formData.interestPerTerm}" oninput="window.updateFormData('interestPerTerm', this.value)" ${formData.status==='2'?'readonly':''} class="w-full py-1 px-2 border rounded outline-none font-mono ${formData.status==='2'?'bg-blue-50 text-blue-800':'bg-gray-100'} text-sm" /></div></div>`}${isEdit?`<div class="col-span-3 border-t border-orange-200 my-1 pt-1"><h4 class="text-[10px] font-bold text-orange-600 uppercase tracking-wider mb-1">本期調整 (當月實收)</h4><div class="grid grid-cols-2 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">本期本金</label><input type="number" id="input_currentPrincipal" value="${formData.currentPrincipal!==undefined?formData.currentPrincipal:(formData.status==='5'?formData.negotiationPrincipal:formData.principalPerTerm)}" oninput="window.updateFormData('currentPrincipal', this.value)" class="w-full py-1 px-2 border border-orange-300 rounded outline-none font-mono bg-orange-50 text-sm text-gray-700 font-bold" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">本期利息</label><input type="number" id="input_currentInterest" value="${formData.currentInterest!==undefined?formData.currentInterest:(formData.status==='5'?0:formData.interestPerTerm)}" oninput="window.updateFormData('currentInterest', this.value)" class="w-full py-1 px-2 border border-orange-300 rounded outline-none font-mono bg-orange-50 text-sm text-gray-700 font-bold" /></div></div></div>`:''}</div></div><div class="lg:col-span-4"><label class="block text-[10px] text-gray-500 mb-0.5">附註</label><textarea rows="2" id="input_note" oninput="window.updateFormData('note', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm resize-none">${formData.note}</textarea></div>${isEdit?`<div class="lg:col-span-4 bg-yellow-50 p-2 rounded border border-yellow-200 grid grid-cols-4 gap-2"><div><label class="block text-[10px] text-gray-500">欠款</label><span id="display_arrears" class="font-mono font-bold text-red-600">${formatNumber(calc.arrears)}</span></div><div><label class="block text-[10px] text-gray-500">在外本金</label><span id="display_outstanding" class="font-mono font-bold">${formatNumber(calc.outstanding)}</span></div>${formData.status==='5'?`<div><label class="block text-[10px] text-purple-500">協商本金</label><span id="display_negotiation" class="font-mono font-bold text-purple-600">${formatNumber(formData.negotiationPrincipal||0)}</span></div>`:''}<div><label class="block text-[10px] text-gray-500">已還款期數</label><span class="font-mono font-bold text-blue-600 clickable-repaid" onclick="window.openModal('schedule', '${state.editingRecord.id}')">${repaidCount} 期 <i data-lucide="calendar-days" class="w-3 h-3 inline ml-1"></i></span></div>${lastPayDate?`<div class="col-span-1"><label class="block text-[10px] text-gray-500">最後繳款日</label><span class="font-mono font-bold">${lastPayDate}</span></div>`:''}<div class="col-span-1 flex justify-end space-x-2"><button onclick="window.duplicateCase()" class="px-3 py-1 bg-blue-100 text-blue-600 rounded hover:bg-blue-200 text-xs font-bold flex items-center"><i data-lucide="copy" class="w-3 h-3 mr-1"></i>複製案件</button><button onclick="window.handleDelete('${state.editingRecord.id}')" class="px-3 py-1 bg-red-100 text-red-600 rounded hover:bg-red-200 text-xs font-bold flex items-center"><i data-lucide="trash-2" class="w-3 h-3 mr-1"></i>刪除案件</button></div></div>`:''}</div><div class="bg-white px-6 py-4 w-full flex justify-end items-center gap-6 border-t border-gray-100 shrink-0 mt-auto"><button onclick="window.setActiveTab('list')" class="text-gray-500 hover:text-gray-800 text-sm font-medium transition-colors">取消</button><button onclick="window.handleSaveForm()" class="px-6 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 shadow-sm flex items-center font-bold text-sm transition-transform active:scale-95"><i data-lucide="save" class="w-4 h-4 mr-2"></i>儲存資料</button></div></div>`;
+    return `<div class="max-w-5xl mx-auto bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden animate-fade-in flex flex-col h-[calc(100vh-6rem)]"><div class="bg-white border-b border-gray-200 p-4 flex justify-between items-center"><div class="flex items-center"><button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁"><i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i></button><div><h2 class="text-xl font-bold text-gray-800">${isEdit?'編輯案件':'新增案件'}</h2><p class="text-sm text-gray-500 mt-1">填寫或修改案件資訊</p></div></div><div class="flex items-center space-x-3">${state.history.length>0?`<button onclick="window.goBack()" class="flex items-center px-4 py-2 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg transition-colors font-medium shadow-sm"><i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁</button>`:''}${renderUserSwitcher()}</div></div><div class="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-sm flex-1 overflow-y-auto custom-scrollbar"><div class="lg:col-span-4 bg-gray-50 p-3 rounded-lg border border-gray-200"><h4 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 border-b border-gray-200 pb-1">基本與聯絡資料</h4><div class="grid grid-cols-2 md:grid-cols-4 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">借款人</label><input type="text" id="input_borrower" value="${formData.borrower}" oninput="window.updateFormData('borrower', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">身分證字號</label><input type="text" id="input_idNumber" value="${formData.idNumber}" oninput="window.updateFormData('idNumber', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">工作</label><input type="text" id="input_job" value="${formData.job}" oninput="window.updateFormData('job', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">經辦人</label><input type="text" id="input_agent" value="${formData.agent}" oninput="window.updateFormData('agent', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div class="md:col-span-2"><label class="block text-[10px] text-gray-500 mb-0.5">住址</label><input type="text" id="input_address" value="${formData.address}" oninput="window.updateFormData('address', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">電話</label><input type="text" id="input_telephone" value="${formData.telephone}" oninput="window.updateFormData('telephone', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">手機</label><input type="text" id="input_mobile" value="${formData.mobile}" oninput="window.updateFormData('mobile', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div></div></div><div class="lg:col-span-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3"><div class="lg:col-span-2 bg-blue-50 p-3 rounded-lg border border-blue-100"><h4 class="text-xs font-bold text-blue-800 uppercase tracking-wider mb-2 border-b border-blue-200 pb-1">貸款設定</h4><div class="grid grid-cols-2 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">狀態</label><select onchange="window.updateFormData('status', this.value, true)" class="w-full py-1 px-2 border rounded outline-none bg-white text-sm"><option value="1" ${formData.status=='1'?'selected':''}>1 - 進行中</option>${canUseStatus2?`<option value="2" ${formData.status=='2'?'selected':''}>2 - 代管案件</option>`:''}<option value="3" ${formData.status=='3'?'selected':''}>3 - 呆帳</option><option value="5" ${formData.status=='5'?'selected':''}>5 - 協商中</option><option value="0" ${formData.status=='0'?'selected':''}>0 - 已結案</option><option value="4" ${formData.status=='4'?'selected':''}>4 - 已結案呆帳</option></select></div><div><label class="block text-[10px] text-gray-500 mb-0.5">方式</label><select onchange="window.updateFormData('method', this.value, true)" class="w-full py-1 px-2 border rounded outline-none bg-white text-sm" ${formData.status==='5'?'disabled':''}><option value="叨簿子" ${formData.method=='叨簿子'?'selected':''}>叨簿子</option><option value="設定" ${formData.method=='設定'?'selected':''}>設定</option><option value="票貼" ${formData.method=='票貼'?'selected':''}>票貼</option><option value="小額" ${formData.method=='小額'?'selected':''}>小額</option></select></div><div><label class="block text-[10px] text-gray-500 mb-0.5">借款金額(債權)</label><input type="number" id="input_loanAmount" value="${formData.loanAmount}" oninput="window.updateFormData('loanAmount', this.value)" class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">放款金額(實際)</label><input type="number" id="input_disbursed" value="${formData.disbursed}" oninput="window.updateFormData('disbursed', this.value)" class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">放款日期</label><input type="date" id="input_date" value="${formData.date}" oninput="window.updateFormData('date', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm" /></div>${formData.status==='3'?`<div><label class="block text-[10px] text-red-600 mb-0.5 font-bold">強制執行狀態</label><select onchange="window.updateFormData('executionStatus', this.value)" class="w-full py-1 px-2 border border-red-300 rounded outline-none font-mono bg-red-50 text-sm"><option value="" ${!formData.executionStatus?'selected':''}>無</option><option value="in_progress" ${formData.executionStatus==='in_progress'?'selected':''}>進行中</option><option value="completed" ${formData.executionStatus==='completed'?'selected':''}>已結案 (排除圖表)</option></select><p class="text-[9px] text-red-500 mt-1">已完成強制執行的案件將不會出現在呆帳趨勢圖中</p></div>`:''}</div></div><div class="lg:col-span-2 bg-emerald-50 p-3 rounded-lg border border-emerald-100"><h4 class="text-xs font-bold text-emerald-800 uppercase tracking-wider mb-2 border-b border-emerald-200 pb-1">還款條件</h4><div class="grid grid-cols-3 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">期數</label><input type="number" id="input_terms" value="${formData.terms}" oninput="window.updateFormData('terms', this.value)" ${formData.status==='5'?'disabled':''} class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">利率(%)</label><input type="text" id="input_interestRate" value="${formData.interestRate}" oninput="window.updateFormData('interestRate', this.value)" ${formData.status==='5'?'disabled':''} class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">每期還款日</label><input type="text" id="input_repayDay" value="${formData.repayDay}" oninput="window.updateFormData('repayDay', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm" /></div>${formData.status==='2'?`<div class="col-span-3 border-t border-emerald-200 my-1"></div><div><label class="block text-[10px] text-blue-600 mb-0.5">借款利率 (%)</label><input type="text" id="input_specialRate" value="${formData.specialRate}" oninput="window.updateFormData('specialRate', this.value)" class="w-full py-1 px-2 border border-blue-300 rounded font-mono bg-white text-sm" placeholder="例如: 0.5"></div><div><label class="block text-[10px] text-blue-600 mb-0.5">應付 (給委託人)</label><input type="text" id="input_expectedPayment" value="${formatNumber(formData.expectedPayment||0)}" readonly class="w-full py-1 px-2 border border-blue-300 rounded font-mono bg-blue-50 text-blue-800 text-sm" /></div>`:''}${formData.status==='5'?`<div class="col-span-3 border-t border-purple-200 my-1 pt-2"><h4 class="text-xs font-bold text-purple-700 uppercase tracking-wider mb-1">協商還款設定</h4><div class="grid grid-cols-1 gap-3"><div><label class="block text-[10px] text-purple-600 mb-0.5 font-bold">協商本金 (每期還款)</label><input type="number" id="input_negotiationPrincipal" value="${formData.negotiationPrincipal}" oninput="window.updateFormData('negotiationPrincipal', this.value)" class="w-full py-1 px-2 border border-purple-300 rounded outline-none font-mono bg-purple-50 text-purple-800 text-sm" /><p class="text-[9px] text-purple-500 mt-1">協商案件每期固定還款本金，無利息</p></div></div></div>`:`<div class="col-span-3 grid grid-cols-2 gap-3 mt-1"><div><label class="block text-[10px] text-gray-500 mb-0.5 font-bold">每期本金 (合約)</label><input type="number" id="input_principalPerTerm" value="${formData.principalPerTerm}" oninput="window.updateFormData('principalPerTerm', this.value)" class="w-full py-1 px-2 border rounded outline-none font-mono bg-gray-100 text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5 font-bold">${formData.status==='2'?'管理費':'每期利息'} (合約)</label><input type="number" id="input_interestPerTerm" value="${formData.interestPerTerm}" oninput="window.updateFormData('interestPerTerm', this.value)" ${formData.status==='2'?'readonly':''} class="w-full py-1 px-2 border rounded outline-none font-mono ${formData.status==='2'?'bg-blue-50 text-blue-800':'bg-gray-100'} text-sm" /></div></div>`}${isEdit?`<div class="col-span-3 border-t border-orange-200 my-1 pt-1"><h4 class="text-[10px] font-bold text-orange-600 uppercase tracking-wider mb-1">本期調整 (當月實收)</h4><div class="grid grid-cols-2 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">本期本金</label><input type="number" id="input_currentPrincipal" value="${formData.currentPrincipal!==undefined?formData.currentPrincipal:(formData.status==='5'?formData.negotiationPrincipal:formData.principalPerTerm)}" oninput="window.updateFormData('currentPrincipal', this.value)" class="w-full py-1 px-2 border border-orange-300 rounded outline-none font-mono bg-orange-50 text-sm text-gray-700 font-bold" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">本期利息</label><input type="number" id="input_currentInterest" value="${formData.currentInterest!==undefined?formData.currentInterest:(formData.status==='5'?0:formData.interestPerTerm)}" oninput="window.updateFormData('currentInterest', this.value)" class="w-full py-1 px-2 border border-orange-300 rounded outline-none font-mono bg-orange-50 text-sm text-gray-700 font-bold" /></div></div></div>`:''}</div></div><div class="lg:col-span-4"><label class="block text-[10px] text-gray-500 mb-0.5">附註</label><textarea rows="2" id="input_note" oninput="window.updateFormData('note', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm resize-none">${formData.note}</textarea></div>${isEdit?`<div class="lg:col-span-4 bg-yellow-50 p-2 rounded border border-yellow-200 grid grid-cols-4 gap-2"><div><label class="block text-[10px] text-gray-500">欠款</label><span id="display_arrears" class="font-mono font-bold text-red-600">${formatNumber(calc.arrears)}</span></div><div><label class="block text-[10px] text-gray-500">在外本金</label><span id="display_outstanding" class="font-mono font-bold">${formatNumber(calc.outstanding)}</span></div>${formData.status==='5'?`<div><label class="block text-[10px] text-purple-500">協商本金</label><span id="display_negotiation" class="font-mono font-bold text-purple-600">${formatNumber(formData.negotiationPrincipal||0)}</span></div>`:''}<div><label class="block text-[10px] text-gray-500">已還款期數</label><span class="font-mono font-bold text-blue-600 clickable-repaid" onclick="window.openModal('schedule', '${state.editingRecord.id}')">${repaidCount} 期 <i data-lucide="calendar-days" class="w-3 h-3 inline ml-1"></i></span></div>${lastPayDate?`<div class="col-span-1"><label class="block text-[10px] text-gray-500">最後繳款日</label><span class="font-mono font-bold">${lastPayDate}</span></div>`:''}<div class="col-span-1 flex justify-end space-x-2"><button onclick="window.duplicateCase()" class="px-3 py-1 bg-blue-100 text-blue-600 rounded hover:bg-blue-200 text-xs font-bold flex items-center"><i data-lucide="copy" class="w-3 h-3 mr-1"></i>複製案件</button><button onclick="window.handleDelete('${state.editingRecord.id}')" class="px-3 py-1 bg-red-100 text-red-600 rounded hover:bg-red-200 text-xs font-bold flex items-center"><i data-lucide="trash-2" class="w-3 h-3 mr-1"></i>刪除案件</button></div></div>`:''}</div><div class="bg-white px-6 py-4 w-full flex justify-end items-center gap-6 border-t border-gray-100 shrink-0 mt-auto"><button onclick="window.setActiveTab('list')" class="text-gray-500 hover:text-gray-800 text-sm font-medium transition-colors">取消</button><button onclick="window.handleSaveForm()" class="px-6 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 shadow-sm flex items-center font-bold text-sm transition-transform active:scale-95"><i data-lucide="save" class="w-4 h-4 mr-2"></i>儲存資料</button></div></div>`;
 }
 function renderRepayment() {
     let repaymentCases = state.records.filter(r => {
@@ -1935,8 +2597,9 @@ function renderApp() {
         }
         modalHtml += `<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 animate-fade-in backdrop-blur-sm"><div class="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col"><div class="p-4 flex justify-between items-center text-white shrink-0 bg-gradient-to-r from-blue-600 to-indigo-600"><h3 class="font-bold flex items-center"><i data-lucide="list" class="w-5 h-5 mr-2"></i> 案件列表</h3><button onclick="window.updateState({modalType:null})" class="hover:bg-white/20 p-1 rounded"><i data-lucide="x" class="w-5 h-5"></i></button></div><div class="p-0 overflow-y-auto flex-1"><table class="w-full text-left border-collapse"><thead class="bg-gray-50 text-gray-500 text-xs uppercase sticky top-0">${customHeaders}</thead><tbody class="divide-y divide-gray-100 text-sm">${filteredWithDisplayIds.map(r=>{ const calc=calculateDerivedData(r); const status=getStatusLabel(r.status); return customRowBuilder(r,calc,status); }).join('')}</tbody></table></div></div></div>`;
     }
+    // 預覽彈卡改為 body-level 容器，不走 renderApp (避開重畫列表造成捲軸跳動)
     if (state.showTrendModal) {
-        modalHtml += `<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 animate-fade-in backdrop-blur-sm"><div class="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[90vh] flex flex-col"><div class="p-4 flex justify-between items-center text-white shrink-0 bg-gradient-to-r from-emerald-600 to-teal-600 rounded-t-xl"><h3 class="font-bold flex items-center"><i data-lucide="trending-up" class="w-5 h-5 mr-2"></i>淨收入趨勢圖</h3><button onclick="window.closeTrendModal()" class="hover:bg-white/20 p-1 rounded"><i data-lucide="x" class="w-5 h-5"></i></button></div><div class="p-4 border-b border-gray-200 flex justify-center space-x-4"><button onclick="window.switchTrendView('month')" class="px-4 py-2 rounded-lg text-sm font-medium ${state.trendView==='month'?'bg-emerald-600 text-white':'bg-gray-200 text-gray-700 hover:bg-gray-300'}">近12個月</button><button onclick="window.switchTrendView('year')" class="px-4 py-2 rounded-lg text-sm font-medium ${state.trendView==='year'?'bg-emerald-600 text-white':'bg-gray-200 text-gray-700 hover:bg-gray-300'}">歷年</button></div><div class="flex-1 p-4 overflow-hidden"><div id="trendChart" style="width:100%;height:500px;"></div></div></div></div>`;
+        modalHtml += `<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4 animate-fade-in backdrop-blur-sm"><div class="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[95vh] sm:max-h-[90vh] flex flex-col"><div class="p-3 sm:p-4 flex justify-between items-center text-white shrink-0 bg-gradient-to-r from-emerald-600 to-teal-600 rounded-t-xl"><h3 class="font-bold flex items-center text-sm sm:text-base"><i data-lucide="trending-up" class="w-4 h-4 sm:w-5 sm:h-5 mr-2"></i>淨收入趨勢圖</h3><button onclick="window.closeTrendModal()" class="hover:bg-white/20 p-1 rounded"><i data-lucide="x" class="w-5 h-5"></i></button></div><div class="p-2 sm:p-4 border-b border-gray-200 flex justify-center space-x-2 sm:space-x-4"><button onclick="window.switchTrendView('month')" class="px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg text-xs sm:text-sm font-medium ${state.trendView==='month'?'bg-emerald-600 text-white':'bg-gray-200 text-gray-700 hover:bg-gray-300'}">近12個月</button><button onclick="window.switchTrendView('year')" class="px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg text-xs sm:text-sm font-medium ${state.trendView==='year'?'bg-emerald-600 text-white':'bg-gray-200 text-gray-700 hover:bg-gray-300'}">歷年</button></div><div class="flex-1 p-2 sm:p-4 overflow-hidden"><div id="trendChart" class="trend-chart"></div></div></div></div>`;
     }
     app.innerHTML = `<div class="flex h-screen bg-slate-100 font-sans text-gray-800"><div class="w-20 sm:w-64 bg-slate-900 text-white flex flex-col justify-between fixed h-full z-20 transition-all duration-300"><div><div class="p-6 flex items-center justify-center sm:justify-start border-b border-slate-700"><i data-lucide="wallet" class="w-8 h-8 text-emerald-400 mr-0 sm:mr-3"></i><span class="hidden sm:block text-xl font-bold tracking-wider">財務管理</span></div><div class="px-6 py-4 flex items-center border-b border-slate-800 mb-2"><div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold mr-3 ${state.isDemoMode?'bg-amber-500':'bg-slate-700'}">${state.isDemoMode?'T':(state.currentUser?state.currentUser.substring(0,2).toUpperCase():'U')}</div><div class="hidden sm:block"><p class="text-xs text-slate-400">${state.isDemoMode?"試用模式":"已登入"}</p><p class="text-sm font-bold text-white truncate w-32">${state.isDemoMode?"訪客 (不儲存)":state.currentUser}</p></div></div><nav class="mt-4 px-4 space-y-2"><button onclick="window.setActiveTab('dashboard')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab==='dashboard'?'bg-emerald-600':'hover:bg-slate-800'}"><i data-lucide="layout-dashboard" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">營運報表</span></button><button onclick="window.setActiveTab('list')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab==='list'?'bg-emerald-600':'hover:bg-slate-800'}"><i data-lucide="database" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">案件列表</span></button><button onclick="window.setActiveTab('repayment')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab==='repayment'?'bg-emerald-600':'hover:bg-slate-800'}"><i data-lucide="banknote" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">還款輸入</span></button><button onclick="window.open('user_manual.html', '_blank')" class="w-full flex items-center p-3 rounded-lg transition-colors hover:bg-slate-800"><i data-lucide="book-open" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">使用手冊</span></button>${state.isAdmin&&!state.isDemoMode?`<button onclick="window.setActiveTab('admin')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab==='admin'?'bg-emerald-600':'hover:bg-slate-800'}"><i data-lucide="users" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">用戶管理</span></button>`:''}</nav></div><div class="p-4 border-t border-slate-700 space-y-2"><button onclick="window.handleLogout()" class="w-full flex items-center justify-center sm:justify-start p-3 rounded-lg text-slate-400 hover:bg-red-900/30 hover:text-red-400 transition-colors"><i data-lucide="log-out" class="w-5 h-5 mr-0 sm:mr-2"></i><span class="hidden sm:block font-medium">登出系統</span></button></div></div><div class="flex-1 ml-20 sm:ml-64 overflow-x-hidden">${content}</div>${modalHtml}</div>`;
     if (state.activeTab === 'list') setTimeout(() => window.refreshListUI(), 50);
