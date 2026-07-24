@@ -135,6 +135,53 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebas
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut, updateProfile, setPersistence, browserSessionPersistence } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
 import { getFirestore, collection, addDoc, onSnapshot, query, doc, deleteDoc, updateDoc, serverTimestamp, writeBatch, orderBy, getDoc, setDoc, where, getDocs, limit } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
 
+// === 工具：body 捲軸鎖定 (modal 開啟/關閉用) ===
+// 鎖定 = 隱藏捲軸避免背景被滑動；解開 = 恢復原本狀態
+let bodyScrollLockCount = 0; // 支援多個 modal 同時開 (巢狀計數)
+const lockBodyScroll = (lock) => {
+    if (lock) {
+        bodyScrollLockCount++;
+        if (bodyScrollLockCount === 1) {
+            document.body.style.overflow = 'hidden';
+            document.body.style.position = 'fixed';
+            document.body.style.width = '100%';
+            document.body.classList.add('overflow-hidden');
+        }
+    } else {
+        bodyScrollLockCount = Math.max(0, bodyScrollLockCount - 1);
+        if (bodyScrollLockCount === 0) {
+            document.body.style.overflow = '';
+            document.body.style.position = '';
+            document.body.style.width = '';
+            document.body.classList.remove('overflow-hidden');
+        }
+    }
+};
+
+// === 工具：取得當前使用者可看到的 records ===
+// 規則：
+//   1. 試用模式：只看 'demo' 帳號
+//   2. 管理員 + 指定 viewingUid：看該使用者
+//   3. 一般使用者：只看自己的
+//   4. 管理員 + viewingUid === 'all'：看全部
+const getVisibleRecords = () => {
+    if (state.isDemoMode) return state.records.filter(r => r.ownerUid === 'demo');
+    if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) {
+        return state.records.filter(r => r.ownerUid === state.viewingUid);
+    }
+    if (!state.isAdmin && !state.isDemoMode) return state.records.filter(r => r.ownerUid === state.currentUserUid);
+    return state.records; // admin + 'all'
+};
+
+// === 工具：生成趨勢圖 modal 的 HTML ===
+// 共用於「淨收入趨勢圖」和「呆帳趨勢圖」
+// config = { idPrefix, title, icon, gradientFrom, gradientTo, currentView, switchFn, closeFn, chartId }
+const buildTrendModalHtml = (config) => {
+    const { title, icon, gradientFrom, gradientTo, currentView, switchFn, closeFn, chartId } = config;
+    const isMonth = currentView === 'month';
+    return `<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4 animate-fade-in backdrop-blur-sm" onclick="window.${closeFn}()"><div class="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[95vh] sm:max-h-[90vh] flex flex-col" onclick="event.stopPropagation()"><div class="p-3 sm:p-4 flex justify-between items-center text-white shrink-0 bg-gradient-to-r ${gradientFrom} ${gradientTo} rounded-t-xl"><h3 class="font-bold flex items-center text-sm sm:text-base"><i data-lucide="${icon}" class="w-4 h-4 sm:w-5 sm:h-5 mr-2"></i>${title}</h3><button onclick="window.${closeFn}()" class="hover:bg-white/20 p-1 rounded"><i data-lucide="x" class="w-5 h-5"></i></button></div><div class="p-2 sm:p-4 border-b border-gray-200 flex justify-center space-x-2 sm:space-x-4"><button onclick="window.${switchFn}('month')" class="px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg text-xs sm:text-sm font-medium ${isMonth?`bg-${gradientFrom.split('-')[1]}-600 text-white`:`bg-gray-200 text-gray-700 hover:bg-gray-300`}">近12個月</button><button onclick="window.${switchFn}('year')" class="px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg text-xs sm:text-sm font-medium ${!isMonth?`bg-${gradientFrom.split('-')[1]}-600 text-white`:`bg-gray-200 text-gray-700 hover:bg-gray-300`}">歷年</button></div><div class="flex-1 p-2 sm:p-4 overflow-hidden"><div id="${chartId}" class="trend-chart"></div></div></div></div>`;
+};
+
 const showMessage = (message, type) => {
     const container = document.getElementById('message-container');
     if (!container) return;
@@ -289,8 +336,24 @@ const sortScheduleLines = (lines) => [...lines].sort((a, b) => {
     if (dateA && dateB) return dateA - dateB;
     if (dateA) return -1; if (dateB) return 1; return 0;
 });
+// === 計算第一個應繳日 (借款日 >= 還款日 → 借款當月不算第一期) ===
+// 規則：
+//   - 借款日.day >= 還款日.day → 回傳 null（表示「當月不算第一期」，沿用預設「借款月 + 1」）
+//     原因：當月已過還款日，當月不可能還款
+//   - 借款日.day < 還款日.day → 回傳第一期日期（當月就算第一期）
+//   - 協商 (status 5) 不適用：協商從協商期開始算，不是從借款日
+//   - repayDay 沒填或無效：回傳 null（保守起見，沿用預設「借款月 + 1」）
+const getFirstRepayDate = (loanDate, dueDay, status) => {
+    if (!loanDate || isNaN(loanDate.getTime())) return null;
+    if (String(status) === '5') return null; // 協商不適用
+    if (!dueDay || dueDay < 1 || dueDay > 31) return null; // repayDay 沒填或無效
+    if (loanDate.getDate() >= dueDay) return null; // 當月不算第一期（沿用預設）
+    // 借款日 < 還款日 → 當月就是第一期
+    const lastDay = new Date(loanDate.getFullYear(), loanDate.getMonth() + 1, 0).getDate();
+    return new Date(loanDate.getFullYear(), loanDate.getMonth(), Math.min(dueDay, lastDay));
+};
 const getPaymentStatus = (record) => {
-    if (record.status === '4') return { isPaid: true, isOverdue: false };
+    if (record.status === '4') return { isPaid: true, isOverdue: false, showNoPayDaySetting: false };
     const dates = extractDatesFromSchedule(record.schedule);
     const now = new Date(); const currentMonth = now.getMonth(); const currentYear = now.getFullYear();
     let isPaidThisMonth = false;
@@ -299,10 +362,27 @@ const getPaymentStatus = (record) => {
         const lastDate = new Date(record.lastRepaymentDate);
         if (lastDate.getMonth() === currentMonth && lastDate.getFullYear() === currentYear) isPaidThisMonth = true;
     }
-    if (record.status === '0') return { isPaid: true, isOverdue: false };
+    if (record.status === '0') return { isPaid: true, isOverdue: false, showNoPayDaySetting: false };
     let repayDay = null; if (record.repayDay) { const match = String(record.repayDay).match(/(\d+)/); if (match) repayDay = parseInt(match[1], 10); }
-    let isOverdue = false; if (!isPaidThisMonth && repayDay) { const currentDay = now.getDate(); if (currentDay >= repayDay) isOverdue = true; }
-    return { isPaid: isPaidThisMonth, isOverdue };
+    // 計算借款月
+    const loanDate = record.date ? new Date(String(record.date).replace(/\//g, '-')) : null;
+    const isInLoanMonth = loanDate && !isNaN(loanDate.getTime()) &&
+        loanDate.getFullYear() === now.getFullYear() && loanDate.getMonth() === now.getMonth();
+    const isNegotiation = String(record.status) === '5';
+    // ★ Q2: repayDay 沒填 + 借款當月 + 非協商 → 顯示「無還款日設定」（不觸發逾期）
+    const showNoPayDaySetting = !repayDay && isInLoanMonth && !isNegotiation;
+    let isOverdue = false;
+    if (!isPaidThisMonth && repayDay) {
+        const currentDay = now.getDate();
+        // ★ Q1: 借款當月、且借款日 >= 還款日 → 當月不可能還款，不算逾期
+        // 條件：今天是借款月、不是協商、借款日 >= 還款日
+        if (isInLoanMonth && !isNegotiation && loanDate.getDate() >= repayDay) {
+            isOverdue = false; // 借款當月不算逾期
+        } else if (currentDay >= repayDay) {
+            isOverdue = true;
+        }
+    }
+    return { isPaid: isPaidThisMonth, isOverdue, showNoPayDaySetting };
 };
 const parseSchedule = (scheduleStr) => {
     if (!scheduleStr) return [];
@@ -454,15 +534,18 @@ const calculateMissedPeriods = (record, now) => {
     let fM = firstDue.getMonth();
     let lastDayFirst = new Date(fY, fM + 1, 0).getDate();
     firstDue.setDate(Math.min(dueDay, lastDayFirst));
-    // 特殊情況：如果第一筆還款紀錄在放款當月，則當月為第一期
-    const scheduleDates = extractDatesFromSchedule(record.schedule || '');
-    if (scheduleDates.length > 0) {
-        const firstScheduleDate = new Date(Math.min(...scheduleDates));
-        if (firstScheduleDate.getFullYear() === loanDate.getFullYear() && firstScheduleDate.getMonth() === loanDate.getMonth()) {
-            const loanLastDay = new Date(loanDate.getFullYear(), loanDate.getMonth() + 1, 0).getDate();
-            firstDue = new Date(loanDate);
-            firstDue.setDate(Math.min(dueDay, loanLastDay));
+    // 特殊情況：借款日 < 還款日 → 當月就是第一期
+    // （例如：7/3 借款、還款日 5 號 → 7/5 該還，所以 7 月就是第一期）
+    // 借款日 >= 還款日 → 沿用預設 firstDue = 借款月 + 1
+    // 協商 (status 5) 不適用：協商從協商期開始算
+    // repayDay 沒填：沿用預設（不觸發新規則）
+    if (String(record.status) !== '5') {
+        const firstRepay = getFirstRepayDate(loanDate, dueDay, record.status);
+        if (firstRepay) {
+            // 借款日 < 還款日 → 當月就是第一期
+            firstDue = firstRepay;
         }
+        // 否則 firstDue 保持 = 借款月 + 1（預設）
     }
     // 產生所有預期應繳日 (到今天為止)
     const expectedDues = [];
@@ -531,18 +614,14 @@ const renderPreviewModalToBody = () => {
     if (state.activePreviewId) {
         container.style.pointerEvents = 'auto'; // ★ 開啟時才攔截
         container.innerHTML = renderCasePreviewModal();
-        // 初始進場時要鎖住 body 捲軸，避免背景被捲動
-        document.body.style.overflow = 'hidden';
+        lockBodyScroll(true);
         if (window.lucide) window.lucide.createIcons();
     } else {
         // ★ 完全清空 + 解除鎖定 + 確保 backdrop 拿掉
         container.style.pointerEvents = 'none'; // ★ 關閉後不攔截
         container.innerHTML = '';
         container.style.display = 'none';
-        document.body.style.overflow = '';
-        document.body.style.position = '';
-        document.body.style.width = '';
-        document.body.classList.remove('overflow-hidden');
+        lockBodyScroll(false);
         // 下一個 frame 恢復 display，讓下次 open 可以正常顯示
         requestAnimationFrame(() => {
             container.style.display = '';
@@ -570,7 +649,7 @@ const renderCasePreviewModal = () => {
     if (!record) return '';
     const calc = calculateDerivedData(record);
     const statusLbl = getStatusLabel(record.status);
-    const { isPaid, isOverdue } = getPaymentStatus(record);
+    const { isPaid, isOverdue, showNoPayDaySetting } = getPaymentStatus(record);
     const lastPayDate = getLastRepaymentDateStr(record);
     const missedPeriods = calculateMissedPeriods(record);
     const totalMissed = missedPeriods.length;
@@ -607,6 +686,13 @@ const renderCasePreviewModal = () => {
         statusPayClass = 'text-gray-700';
         statusPayBg = 'bg-gray-100';
         statusPayIcon = 'gavel';
+    } else if (showNoPayDaySetting) {
+        // ★ Q2: 借款當月 + repayDay 沒填 → 顯示「無還款日設定」（不觸發逾期）
+        statusPayText = '無還款日設定';
+        statusPayClass = 'text-gray-500';
+        statusPayBg = 'bg-gray-100';
+        statusPayIcon = 'minus';
+        clickable = false;
     } else if (isPaid) {
         statusPayText = '已繳';
         statusPayClass = 'text-emerald-700';
@@ -933,9 +1019,7 @@ const calculateStats = () => {
     const uniqueBorrowers = new Set();
     const now = new Date(); const currentMonth = now.getMonth(); const currentYear = now.getFullYear();
     let displayRecords = state.records;
-    if (state.isDemoMode) displayRecords = state.records.filter(r => r.ownerUid === 'demo');
-    else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) displayRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
-    else if (!state.isAdmin && !state.isDemoMode) displayRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
+    displayRecords = getVisibleRecords();
     const searchTerm = state.searchTerm.toLowerCase();
     const filtered = displayRecords.filter(r => (r.borrower?.toLowerCase().includes(searchTerm) || r.displayId?.toLowerCase().includes(searchTerm) || r.method?.toLowerCase().includes(searchTerm)));
     filtered.forEach(r => {
@@ -1135,9 +1219,7 @@ window.toggleSelectCaseForBatch = (caseId) => {
 };
 window.selectAllVisibleCasesForBatch = () => {
     let sourceRecords = state.records;
-    if (state.isDemoMode) sourceRecords = state.records.filter(r => r.ownerUid === 'demo');
-    else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) sourceRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
-    else if (!state.isAdmin && !state.isDemoMode) sourceRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
+    sourceRecords = getVisibleRecords();
     const searchTerm = state.searchTerm.toLowerCase();
     let filtered = sourceRecords.filter(r => r.borrower?.toLowerCase().includes(searchTerm) || r.displayId?.toLowerCase().includes(searchTerm) || r.method?.toLowerCase().includes(searchTerm));
     filtered.sort((a,b) => { const da = a.date ? new Date(a.date.replace(/\//g,'-')) : new Date('9999-12-31'); const db = b.date ? new Date(b.date.replace(/\//g,'-')) : new Date('9999-12-31'); return da - db; });
@@ -1530,9 +1612,7 @@ window.enterDemoMode = () => {
 window.openModalList = (type) => updateState({ modalType: type });
 window.exportToExcel = () => {
     let sourceRecords = state.records;
-    if (state.isDemoMode) sourceRecords = state.records.filter(r => r.ownerUid === 'demo');
-    else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) sourceRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
-    else if (!state.isAdmin && !state.isDemoMode) sourceRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
+    sourceRecords = getVisibleRecords();
     const searchTerm = state.searchTerm.toLowerCase();
     const filtered = sourceRecords.filter(r => r.borrower?.toLowerCase().includes(searchTerm) || r.displayId?.toLowerCase().includes(searchTerm) || r.method?.toLowerCase().includes(searchTerm));
     filtered.sort((a,b) => { const da = a.date ? new Date(a.date.replace(/\//g,'-')) : new Date('9999-12-31'); const db = b.date ? new Date(b.date.replace(/\//g,'-')) : new Date('9999-12-31'); return da - db; });
@@ -1757,9 +1837,7 @@ window.processCsvData = async (csvText) => {
 };
 const generateMobileCardsHtml = () => {
     let sourceRecords = state.records;
-    if (state.isDemoMode) sourceRecords = state.records.filter(r => r.ownerUid === 'demo');
-    else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) sourceRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
-    else if (!state.isAdmin && !state.isDemoMode) sourceRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
+    sourceRecords = getVisibleRecords();
     const searchTerm = state.searchTerm.toLowerCase();
     let filtered = sourceRecords.filter(r => r.borrower?.toLowerCase().includes(searchTerm) || r.displayId?.toLowerCase().includes(searchTerm) || r.method?.toLowerCase().includes(searchTerm));
     filtered.sort((a,b) => { const da = a.date ? new Date(a.date.replace(/\//g,'-')) : new Date('9999-12-31'); const db = b.date ? new Date(b.date.replace(/\//g,'-')) : new Date('9999-12-31'); return da - db; });
@@ -1773,13 +1851,14 @@ const generateMobileCardsHtml = () => {
     const filteredWithDisplayIds = calculateDisplayIds(filtered);
     if (filteredWithDisplayIds.length === 0) return `<div class="p-8 text-center text-gray-400">目前無資料，請點擊新增案件</div>`;
     return filteredWithDisplayIds.map(r => {
-        const { isPaid, isOverdue } = getPaymentStatus(r);
+        const { isPaid, isOverdue, showNoPayDaySetting } = getPaymentStatus(r);
         const calc = calculateDerivedData(r);
         const statusLbl = getStatusLabel(r.status);
         let borrowerColorClass = '';
         switch(r.status) { case '0': borrowerColorClass='text-gray-300'; break; case '2': borrowerColorClass='text-blue-600'; break; case '3': borrowerColorClass='text-red-600'; break; case '4': borrowerColorClass='text-orange-600'; break; case '5': borrowerColorClass='text-purple-600'; break; default: borrowerColorClass='text-gray-800'; }
         let paymentStatusClass = 'unpaid', paymentStatusText = '未繳', paymentStatusIcon = 'alert-circle';
-        if (isPaid) { paymentStatusClass='paid'; paymentStatusText='已繳清'; paymentStatusIcon='check'; }
+        if (showNoPayDaySetting) { paymentStatusClass='no-payday'; paymentStatusText='無還款日設定'; paymentStatusIcon='minus'; }
+        else if (isPaid) { paymentStatusClass='paid'; paymentStatusText='已繳清'; paymentStatusIcon='check'; }
         else if (isOverdue) { paymentStatusClass='overdue'; paymentStatusText='逾期未繳'; paymentStatusIcon='alert-triangle'; }
         const lastPayDate = getLastRepaymentDateStr(r);
         const lastPayHtml = lastPayDate ? `<span class="block text-[10px] mt-1">${lastPayDate}</span>` : '';
@@ -1804,9 +1883,7 @@ window.refreshListUI = () => {
     const totalInfoSpan = document.getElementById('listTotalInfo');
     if (tbody) {
         let sourceRecords = state.records;
-        if (state.isDemoMode) sourceRecords = state.records.filter(r => r.ownerUid === 'demo');
-        else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) sourceRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
-        else if (!state.isAdmin && !state.isDemoMode) sourceRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
+        sourceRecords = getVisibleRecords();
         const searchTerm = state.searchTerm.toLowerCase();
         let filtered = sourceRecords.filter(r => r.borrower?.toLowerCase().includes(searchTerm) || r.displayId?.toLowerCase().includes(searchTerm) || r.method?.toLowerCase().includes(searchTerm));
         filtered.sort((a,b) => { const da = a.date ? new Date(a.date.replace(/\//g,'-')) : new Date('9999-12-31'); const db = b.date ? new Date(b.date.replace(/\//g,'-')) : new Date('9999-12-31'); return da - db; });
@@ -1821,7 +1898,7 @@ window.refreshListUI = () => {
         if (filteredWithDisplayIds.length === 0) tbody.innerHTML = `<tr><td colspan="${state.batchDeleteMode?listFieldDefinitions.length+1:listFieldDefinitions.length}" class="p-8 text-center text-gray-400">目前無資料，請點擊新增案件</td></tr>`;
         else {
             tbody.innerHTML = filteredWithDisplayIds.map(r => {
-                const { isPaid, isOverdue } = getPaymentStatus(r);
+                const { isPaid, isOverdue, showNoPayDaySetting } = getPaymentStatus(r);
                 const calc = calculateDerivedData(r);
                 const statusLbl = getStatusLabel(r.status);
                 const isBadDebt = r.status === '3';
@@ -1842,6 +1919,7 @@ window.refreshListUI = () => {
                         if (field.key === 'paymentStatus') {
                             if (isBadDebt) content = `<div class="flex items-center justify-center p-2"><span class="text-gray-500 font-bold flex items-center text-xs bg-gray-100 px-2 py-1 rounded border border-gray-200 cursor-not-allowed" title="此案件已轉為呆帳"><i data-lucide="gavel" class="w-3 h-3 mr-1"></i>法務程序中</span></div>`;
                             else if (isNegotiation) content = `<div onclick="window.handlePaymentStatusClick('${r.id}')" class="cursor-pointer text-center"><div class="font-bold flex items-center justify-center gap-1 ${isPaid?'text-emerald-600':(isOverdue?'text-red-600':'text-amber-600')}"><i data-lucide="${isPaid?'check':(isOverdue?'alert-triangle':'alert-circle')}" class="w-3 h-3"></i>${isPaid?'已繳清':(isOverdue?'逾期未繳':'未繳')}</div>${lastPayHtml}</div>`;
+                            else if (showNoPayDaySetting) content = `<div class="cursor-not-allowed text-center text-gray-400 text-xs"><i data-lucide="minus" class="w-3 h-3 inline"></i> 無還款日設定</div>`;
                             else content = `<div onclick="window.handlePaymentStatusClick('${r.id}')" class="cursor-pointer text-center"><div class="font-bold flex items-center justify-center gap-1 ${isPaid?'text-emerald-600':(isOverdue?'text-red-600':'text-amber-600')}"><i data-lucide="${isPaid?'check':(isOverdue?'alert-triangle':'alert-circle')}" class="w-3 h-3"></i>${isPaid?'已繳清':(isOverdue?'逾期未繳':'未繳')}</div>${lastPayHtml}</div>`;
                         } else if (field.key === 'remainingTerms') content = calc.remainingTerms;
                         else if (field.key === 'roiTerms') content = calc.roiTerms;
@@ -1884,9 +1962,7 @@ window.refreshListUI = () => {
     if (mobileContainer) { mobileContainer.innerHTML = generateMobileCardsHtml(); lucide.createIcons(); }
     if (totalInfoSpan) {
         let sourceRecords = state.records;
-        if (state.isDemoMode) sourceRecords = state.records.filter(r => r.ownerUid === 'demo');
-        else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) sourceRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
-        else if (!state.isAdmin && !state.isDemoMode) sourceRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
+        sourceRecords = getVisibleRecords();
         const searchTerm = state.searchTerm.toLowerCase();
         let filtered = sourceRecords.filter(r => r.borrower?.toLowerCase().includes(searchTerm) || r.displayId?.toLowerCase().includes(searchTerm) || r.method?.toLowerCase().includes(searchTerm));
         filtered.sort((a,b) => { const da = a.date ? new Date(a.date.replace(/\//g,'-')) : new Date('9999-12-31'); const db = b.date ? new Date(b.date.replace(/\//g,'-')) : new Date('9999-12-31'); return da - db; });
@@ -1934,9 +2010,7 @@ const renderUserSwitcher = () => {
 };
 const computeIncomeTrend = () => {
     let targetRecords = state.records;
-    if (state.isDemoMode) targetRecords = state.records.filter(r => r.ownerUid === 'demo');
-    else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) targetRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
-    else if (!state.isAdmin && !state.isDemoMode) targetRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
+    targetRecords = getVisibleRecords();
     const monthlyMap = new Map(), yearlyMap = new Map();
     targetRecords.forEach(record => {
         const entries = parseSchedule(record.schedule || '');
@@ -1959,9 +2033,7 @@ const computeIncomeTrend = () => {
 };
 const getIncomeDetailForPeriod = (period, isMonth) => {
     let targetRecords = state.records;
-    if (state.isDemoMode) targetRecords = state.records.filter(r => r.ownerUid === 'demo');
-    else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) targetRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
-    else if (!state.isAdmin && !state.isDemoMode) targetRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
+    targetRecords = getVisibleRecords();
     const detailMap = new Map();
     targetRecords.forEach(record => {
         const entries = parseSchedule(record.schedule || '');
@@ -2073,19 +2145,12 @@ const computeBadDebtTrend = () => {
         };
     });
     // ★ 列出每件案件的 currentArrears，方便驗證是否跟 Dashboard 一致
-    console.log('[呆帳趨勢] 案件 currentArrears:', cases.map(c => `${c.record.displayId || c.record.caseNumber} status=${c.record.status} arrears=${c.currentArrears}`).join('\n  '));
     const totalArrears = cases.reduce((s, c) => s + c.currentArrears, 0);
-    console.log(`[呆帳趨勢] 全部案件 currentArrears 總和: ${totalArrears.toLocaleString()}`);
     if (cases.length === 0) {
-        console.warn('[呆帳趨勢] 找不到任何狀態 3/4/5 的案件');
         return { months: [], monthData: [], years: [], yearData: [] };
     }
-    // ★ debug 訊息 (跟据問題需要)
+    // ★ 無日期案件清單 (這些案件只會出現在「現在這個月」)
     const noDateCases = cases.filter(c => !c.startDate);
-    console.log(`[呆帳趨勢] 總呆帳案件: ${cases.length} 件, 其中無日期: ${noDateCases.length} 件`);
-    if (noDateCases.length > 0) {
-        console.log('[呆帳趨勢] 無日期案件清單:', noDateCases.map(c => `${c.record.displayId || c.record.caseNumber || c.record.id} (${c.record.borrower}, status=${c.record.status}, date=${JSON.stringify(c.record.date)}, lastRepayment=${JSON.stringify(c.record.lastRepaymentDate)})`));
-    }
     // 時間範圍：有日期的案件最早月 ~ 現在
     const datedCases = cases.filter(c => c.startDate);
     const minStart = datedCases.length > 0
@@ -2105,8 +2170,10 @@ const computeBadDebtTrend = () => {
     // 計算每個月的總金額
     // ★ 用戶規則：
     //   - 件數 = 全部狀態 3/4/5 (不過濾 balance) - 但排除已執行結案的
-    //   - 金額：統一用 currentArrears (與 Dashboard badDebtAmount 100% 對齊)
-    //       原因：避免 record.loanAmount 為 0 時反推出 0，導致金額莫名增加。
+    //   - 金額：所有狀態都用 schedule 反推到該月底 → 看到完整還款軌跡
+    //       初始金額 (起始月)：
+    //         狀態 3/5 = loanAmount - 進入呆帳前已還本金
+    //         狀態 4 = record.arrears (手動設定的結算金額)
     //   - 起始月 = 最後一次本金+利息都繳的下一個月
     const monthData = months.map(monthKey => {
         const [y, mo] = monthKey.split('-').map(Number);
@@ -2235,13 +2302,22 @@ const getBadDebtTrendContainer = () => {
 const renderBadDebtTrendToBody = () => {
     const c = getBadDebtTrendContainer();
     if (state.showBadDebtTrendModal) {
-        c.innerHTML = `<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4 animate-fade-in backdrop-blur-sm" onclick="window.closeBadDebtTrendModal()"><div class="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[95vh] sm:max-h-[90vh] flex flex-col" onclick="event.stopPropagation()"><div class="p-3 sm:p-4 flex justify-between items-center text-white shrink-0 bg-gradient-to-r from-pink-600 to-rose-600 rounded-t-xl"><h3 class="font-bold flex items-center text-sm sm:text-base"><i data-lucide="trending-down" class="w-4 h-4 sm:w-5 sm:h-5 mr-2"></i>呆帳趨勢圖</h3><button onclick="window.closeBadDebtTrendModal()" class="hover:bg-white/20 p-1 rounded"><i data-lucide="x" class="w-5 h-5"></i></button></div><div class="p-2 sm:p-4 border-b border-gray-200 flex justify-center space-x-2 sm:space-x-4"><button onclick="window.switchBadDebtTrendView('month')" class="px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg text-xs sm:text-sm font-medium ${state.badDebtTrendView==='month'?'bg-pink-600 text-white':'bg-gray-200 text-gray-700 hover:bg-gray-300'}">近12個月</button><button onclick="window.switchBadDebtTrendView('year')" class="px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg text-xs sm:text-sm font-medium ${state.badDebtTrendView==='year'?'bg-pink-600 text-white':'bg-gray-200 text-gray-700 hover:bg-gray-300'}">歷年</button></div><div class="flex-1 p-2 sm:p-4 overflow-hidden"><div id="badDebtTrendChart" class="trend-chart"></div></div></div></div>`;
-        document.body.style.overflow = 'hidden';
+        c.innerHTML = buildTrendModalHtml({
+            title: '呆帳趨勢圖',
+            icon: 'trending-down',
+            gradientFrom: 'from-pink-600',
+            gradientTo: 'to-rose-600',
+            currentView: state.badDebtTrendView,
+            switchFn: 'switchBadDebtTrendView',
+            closeFn: 'closeBadDebtTrendModal',
+            chartId: 'badDebtTrendChart'
+        });
+        lockBodyScroll(true);
         if (window.lucide) window.lucide.createIcons();
         setTimeout(() => drawBadDebtTrendChart(), 50);
     } else {
         c.innerHTML = '';
-        document.body.style.overflow = '';
+        lockBodyScroll(false);
     }
 };
 window.openBadDebtTrendModal = () => { state.showBadDebtTrendModal = true; renderBadDebtTrendToBody(); };
@@ -2373,7 +2449,149 @@ function renderList() {
     return `<div class="flex flex-col h-[calc(100vh-6rem)] animate-fade-in space-y-4"><div class="bg-white border-b border-gray-200 p-4 flex justify-between items-center"><div class="flex items-center"><button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁"><i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i></button><div><h2 class="text-xl font-bold text-gray-800">案件資料列表</h2><p class="text-sm text-gray-500 mt-1"></p></div></div><div class="flex items-center space-x-3">${state.history.length>0?`<button onclick="window.goBack()" class="flex items-center px-4 py-2 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg transition-colors font-medium shadow-sm"><i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁</button>`:''}${renderUserSwitcher()}</div></div><div class="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2 items-center w-full sm:w-auto mb-4"><div class="flex space-x-2 w-full sm:w-auto"><button onclick="window.filterUnpaidCases('all_unpaid')" class="bg-red-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-red-700 flex items-center shadow-sm ${state.unpaidFilter==='all_unpaid'?'ring-2 ring-red-300':''}"><i data-lucide="alert-circle" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">所有未繳</span></button><button onclick="window.filterUnpaidCases('current_unpaid')" class="bg-amber-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-amber-700 flex items-center shadow-sm ${state.unpaidFilter==='current_unpaid'?'ring-2 ring-amber-300':''}"><i data-lucide="alert-triangle" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">逾期未繳</span></button><button onclick="window.showActiveCases()" class="bg-blue-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-blue-700 flex items-center shadow-sm ${state.activeCasesFilter?'ring-2 ring-blue-300':''}"><i data-lucide="list-checks" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">所有未結案</span></button><button onclick="window.showAllCases()" class="bg-gray-500 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-gray-600 flex items-center shadow-sm ${!state.unpaidFilter&&!state.activeCasesFilter&&!state.statusFilter?'ring-2 ring-gray-300':''}"><i data-lucide="database" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">全部案件</span></button></div><div class="flex space-x-2 items-center w-full sm:w-auto"><div class="relative flex-1 sm:w-64"><i data-lucide="search" class="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4"></i><input type="text" id="searchInput" placeholder="搜尋編號、姓名、方式..." value="${state.searchTerm}" class="w-full pl-10 pr-4 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" oninput="window.handleSearch(this.value)"></div><div class="relative"><select onchange="window.filterByStatus(this.value)" class="appearance-none w-full sm:w-40 bg-white border border-gray-300 rounded-lg py-2 pl-3 pr-8 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"><option value="" ${!state.statusFilter?'selected':''}>狀態篩選...</option><option value="bad_debt" ${state.statusFilter==='bad_debt'?'selected':''}>所有呆帳 (狀態3+4)</option>${state.allowedStatus.includes('2')?`<option value="managed" ${state.statusFilter==='managed'?'selected':''}>所有代管 (狀態2)</option>`:''}<option value="closed" ${state.statusFilter==='closed'?'selected':''}>所有結清 (狀態0)</option><option value="negotiation" ${state.statusFilter==='negotiation'?'selected':''}>所有協商 (狀態5)</option></select><i data-lucide="chevron-down" class="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none"></i></div><input type="file" id="csvFileInput" accept=".csv" class="hidden" onchange="window.handleFileChange(event)" /><button onclick="window.handleFileSelect()" class="bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-700 flex items-center shadow-sm disabled:opacity-50 text-sm" ${state.isImporting?'disabled':''} title="匯入垂直格式報表"><i data-lucide="upload" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">匯入 CSV</span></button><button onclick="window.exportToExcel()" class="bg-teal-600 text-white px-3 py-2 rounded-lg hover:bg-teal-700 flex items-center shadow-sm whitespace-nowrap text-sm" title="匯出垂直格式報表（與匯入格式相同）"><i data-lucide="download" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">匯出 CSV</span></button><button onclick="window.toggleBatchDeleteMode()" class="bg-red-600 text-white px-3 py-2 rounded-lg hover:bg-red-700 flex items-center shadow-sm text-sm ${state.batchDeleteMode?'ring-2 ring-red-300':''}"><i data-lucide="trash-2" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">批次刪除</span></button><button onclick="window.openNewForm()" class="bg-emerald-600 text-white px-3 py-2 rounded-lg hover:bg-emerald-700 flex items-center shadow-sm text-sm"><i data-lucide="plus" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">新增</span></button></div></div>${batchDeletePanel}<div class="bg-white rounded-xl shadow-sm border border-gray-200 flex-1 flex flex-col overflow-hidden relative ${state.batchDeleteMode?'batch-selection-mode':''}"><div class="desktop-table-view flex-1 overflow-auto relative custom-scrollbar"><table class="text-left border-collapse w-max"><thead><tr class="bg-gray-50 border-b border-gray-200">${batchDeleteHeader}${headerHtml}</tr></thead><tbody id="loanListBody" class="divide-y divide-gray-100 text-sm"></tbody></table></div><div id="mobileListContainer" class="mobile-card-view flex-1 overflow-y-auto p-4 custom-scrollbar"></div><div class="p-3 border-t border-gray-100 bg-gray-50 flex flex-col sm:flex-row justify-between items-center"><div class="text-xs sm:text-sm text-gray-500 mb-2 sm:mb-0" id="listTotalInfo"></div></div></div></div>`;
 }
 function renderUserManagement() {
-    return `<div class="max-w-6xl mx-auto animate-fade-in"><div class="bg-white border-b border-gray-200 p-4 flex justify-between items-center mb-6"><div class="flex items-center"><button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁"><i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i></button><div><h2 class="text-xl font-bold text-gray-800">用戶權限管理</h2><p class="text-sm text-gray-500"></p></div></div><div class="flex items-center space-x-3">${state.history.length>0?`<button onclick="window.goBack()" class="flex items-center px-4 py-2 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg transition-colors font-medium shadow-sm"><i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁</button>`:''}${renderUserSwitcher()}</div></div><div class="mb-4 flex flex-wrap gap-2"><button onclick="window.cleanupOrphanedCases()" class="px-4 py-2 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 flex items-center text-sm font-bold"><i data-lucide="trash-2" class="w-4 h-4 mr-2"></i>清理無主案件</button><button onclick="window.adminForceDelete()" class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center text-sm font-bold"><i data-lucide="zap" class="w-4 h-4 mr-2"></i>管理員強制刪除工具</button><button onclick="window.repairDatabase()" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center text-sm font-bold"><i data-lucide="wrench" class="w-4 h-4 mr-2"></i>資料庫修復工具</button></div><div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden"><table class="w-full text-left"><thead class="bg-gray-50 text-gray-500 text-xs uppercase"><tr><th class="p-4">用戶名稱</th><th class="p-4">Email</th><th class="p-4 text-center">角色</th><th class="p-4 text-center">允許代管 (Status 2)</th><th class="p-4 text-center">操作</th></table></thead><tbody class="divide-y divide-gray-100">${state.usersDirectory.map(u=>{ const allowStatus2=u.allowedStatus&&u.allowedStatus.includes('2'); const isCurrentUser=u.uid===state.currentUserUid; return `<tr><td class="p-4 font-bold text-gray-800">${u.username} ${isCurrentUser?'<span class="ml-2 text-xs bg-blue-100 text-blue-600 px-2 py-1 rounded">(目前登入)</span>':''}</td><td class="p-4 text-sm text-gray-600">${u.email}</td><td class="p-4 text-center"><span class="px-2 py-1 rounded-full text-xs font-bold ${u.role==='admin'?'bg-purple-100 text-purple-700':'bg-gray-100 text-gray-600'}">${u.role==='admin'?'管理員':'一般用戶'}</span></td><td class="p-4 text-center">${isCurrentUser?'<span class="text-gray-400 text-xs">(不適用)</span>':`<label class="relative inline-flex items-center cursor-pointer"><input type="checkbox" class="sr-only peer" onchange="window.toggleUserStatus2Permission('${u.uid}')" ${allowStatus2?'checked':''}><div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div></label>`}</td><td class="p-4 text-center space-x-2">${isCurrentUser?'<span class="text-gray-400 text-xs">無法操作自己</span>':`${u.role==='admin'?`<button onclick="window.changeUserRole('${u.uid}', 'admin')" class="px-3 py-1.5 bg-yellow-100 text-yellow-600 hover:bg-yellow-200 rounded text-xs font-bold flex items-center inline-block mb-1 sm:mb-0 sm:inline"><i data-lucide="user-minus" class="w-3 h-3 mr-1"></i>降級為一般用戶</button>`:`<button onclick="window.changeUserRole('${u.uid}', 'user')" class="px-3 py-1.5 bg-green-100 text-green-600 hover:bg-green-200 rounded text-xs font-bold flex items-center inline-block mb-1 sm:mb-0 sm:inline"><i data-lucide="user-plus" class="w-3 h-3 mr-1"></i>升級為管理員</button>`}<button onclick="window.deleteUserAccount('${u.uid}', '${u.username}')" class="px-3 py-1.5 bg-red-100 text-red-600 hover:bg-red-200 rounded text-xs font-bold flex items-center inline-block"><i data-lucide="trash-2" class="w-3 h-3 mr-1"></i>刪除帳號</button>`}</td>`; }).join('')}</tbody></table></div><div class="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg"><h3 class="font-bold text-yellow-800 flex items-center"><i data-lucide="alert-triangle" class="w-4 h-4 mr-2"></i>注意事項</h3><ul class="text-sm text-yellow-700 mt-2 space-y-1"><li>• <strong>新用戶註冊</strong>：所有新用戶預設為一般用戶，不再自動升級為管理員</li><li>• <strong>角色變更</strong>：管理員可以將一般用戶升級為管理員，或將管理員降級為一般用戶</li><li>• <strong>代管權限</strong>：只有管理員和獲得授權的用戶可以使用「代管案件」功能</li><li>• <strong>降級效果</strong>：管理員降級為一般用戶後，將失去代管權限（狀態2）</li><li>• <strong>刪除操作</strong>：刪除用戶會同時刪除該用戶的所有案件記錄，無法復原</li><li>• 請謹慎操作所有管理功能</li></ul></div></div>`;
+    return `<div class="max-w-6xl mx-auto animate-fade-in">
+        <!-- 頁首 -->
+        <div class="bg-white border-b border-gray-200 p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-6 rounded-t-xl">
+            <div class="flex items-center">
+                <button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁">
+                    <i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i>
+                </button>
+                <div>
+                    <h2 class="text-xl font-bold text-gray-800 flex items-center">
+                        <i data-lucide="users" class="w-5 h-5 mr-2 text-purple-600"></i>用戶權限管理
+                    </h2>
+                    <p class="text-sm text-gray-500 mt-1">管理所有用戶的權限、角色與資料</p>
+                </div>
+            </div>
+            <div class="flex items-center space-x-3">
+                ${state.history.length > 0 ? `<button onclick="window.goBack()" class="flex items-center px-4 py-2 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg transition-colors font-medium shadow-sm">
+                    <i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁
+                </button>` : ''}
+                ${renderUserSwitcher()}
+            </div>
+        </div>
+
+        <!-- 管理工具按鈕區 -->
+        <div class="mb-6 grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <button onclick="window.cleanupOrphanedCases()" class="px-4 py-3 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 flex items-center justify-center text-sm font-bold shadow-sm transition-colors">
+                <i data-lucide="trash-2" class="w-4 h-4 mr-2"></i>清理無主案件
+            </button>
+            <button onclick="window.adminForceDelete()" class="px-4 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center justify-center text-sm font-bold shadow-sm transition-colors">
+                <i data-lucide="zap" class="w-4 h-4 mr-2"></i>管理員強制刪除
+            </button>
+            <button onclick="window.repairDatabase()" class="px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center justify-center text-sm font-bold shadow-sm transition-colors">
+                <i data-lucide="wrench" class="w-4 h-4 mr-2"></i>資料庫修復
+            </button>
+        </div>
+
+        <!-- 用戶列表 -->
+        <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+            <!-- 桌面版表格 -->
+            <div class="hidden md:block overflow-x-auto">
+                <table class="w-full text-left">
+                    <thead class="bg-gray-50 text-gray-500 text-xs uppercase">
+                        <tr>
+                            <th class="p-4 font-semibold">用戶名稱</th>
+                            <th class="p-4 font-semibold">Email</th>
+                            <th class="p-4 text-center font-semibold">角色</th>
+                            <th class="p-4 text-center font-semibold">允許代管 (Status 2)</th>
+                            <th class="p-4 text-center font-semibold">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-100">
+                        ${state.usersDirectory.map(u => {
+                            const allowStatus2 = u.allowedStatus && u.allowedStatus.includes('2');
+                            const isCurrentUser = u.uid === state.currentUserUid;
+                            return `<tr class="hover:bg-gray-50 transition-colors">
+                                <td class="p-4 font-bold text-gray-800 whitespace-nowrap">
+                                    ${u.username}
+                                    ${isCurrentUser ? '<span class="ml-2 text-xs bg-blue-100 text-blue-600 px-2 py-1 rounded-full">(目前登入)</span>' : ''}
+                                </td>
+                                <td class="p-4 text-sm text-gray-600">${u.email || '<span class="text-gray-400">未填寫</span>'}</td>
+                                <td class="p-4 text-center">
+                                    <span class="px-3 py-1 rounded-full text-xs font-bold ${u.role === 'admin' ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-600'}">
+                                        ${u.role === 'admin' ? '👑 管理員' : '一般用戶'}
+                                    </span>
+                                </td>
+                                <td class="p-4 text-center">
+                                    ${isCurrentUser ? '<span class="text-gray-400 text-xs">(不適用)</span>' : `<label class="relative inline-flex items-center cursor-pointer">
+                                        <input type="checkbox" class="sr-only peer" onchange="window.toggleUserStatus2Permission('${u.uid}')" ${allowStatus2 ? 'checked' : ''}>
+                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                                    </label>`}
+                                </td>
+                                <td class="p-4 text-center">
+                                    ${isCurrentUser ? '<span class="text-gray-400 text-xs">無法操作自己</span>' : `<div class="flex items-center justify-center gap-2">
+                                        ${u.role === 'admin' ? `<button onclick="window.changeUserRole('${u.uid}', 'admin')" class="px-3 py-1.5 bg-yellow-100 text-yellow-700 hover:bg-yellow-200 rounded text-xs font-bold flex items-center transition-colors">
+                                            <i data-lucide="user-minus" class="w-3 h-3 mr-1"></i>降級
+                                        </button>` : `<button onclick="window.changeUserRole('${u.uid}', 'user')" class="px-3 py-1.5 bg-green-100 text-green-700 hover:bg-green-200 rounded text-xs font-bold flex items-center transition-colors">
+                                            <i data-lucide="user-plus" class="w-3 h-3 mr-1"></i>升級
+                                        </button>`}
+                                        <button onclick="window.deleteUserAccount('${u.uid}', '${u.username}')" class="px-3 py-1.5 bg-red-100 text-red-600 hover:bg-red-200 rounded text-xs font-bold flex items-center transition-colors">
+                                            <i data-lucide="trash-2" class="w-3 h-3 mr-1"></i>刪除
+                                        </button>
+                                    </div>`}
+                                </td>
+                            </tr>`;
+                        }).join('')}
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- 手機版卡片 -->
+            <div class="md:hidden divide-y divide-gray-100">
+                ${state.usersDirectory.map(u => {
+                    const allowStatus2 = u.allowedStatus && u.allowedStatus.includes('2');
+                    const isCurrentUser = u.uid === state.currentUserUid;
+                    return `<div class="p-4 ${isCurrentUser ? 'bg-blue-50/50' : ''}">
+                        <div class="flex justify-between items-start mb-3">
+                            <div class="flex-1 min-w-0">
+                                <div class="flex items-center gap-2 mb-1">
+                                    <span class="font-bold text-gray-800">${u.username}</span>
+                                    ${isCurrentUser ? '<span class="text-xs bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full">(目前登入)</span>' : ''}
+                                </div>
+                                <div class="text-xs text-gray-500 truncate">${u.email || '未填寫 Email'}</div>
+                            </div>
+                            <span class="px-2 py-1 rounded-full text-xs font-bold whitespace-nowrap ${u.role === 'admin' ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-600'}">
+                                ${u.role === 'admin' ? '👑 管理員' : '一般用戶'}
+                            </span>
+                        </div>
+                        <div class="flex items-center justify-between mb-3 py-2 border-y border-gray-100">
+                            <span class="text-sm text-gray-600">允許代管 (Status 2)</span>
+                            ${isCurrentUser ? '<span class="text-gray-400 text-xs">(不適用)</span>' : `<label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" class="sr-only peer" onchange="window.toggleUserStatus2Permission('${u.uid}')" ${allowStatus2 ? 'checked' : ''}>
+                                <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                            </label>`}
+                        </div>
+                        ${isCurrentUser ? '<div class="text-center text-gray-400 text-xs py-2">無法操作自己</div>' : `<div class="grid grid-cols-2 gap-2">
+                            ${u.role === 'admin' ? `<button onclick="window.changeUserRole('${u.uid}', 'admin')" class="px-3 py-2 bg-yellow-100 text-yellow-700 hover:bg-yellow-200 rounded text-xs font-bold flex items-center justify-center transition-colors">
+                                <i data-lucide="user-minus" class="w-3 h-3 mr-1"></i>降級
+                            </button>` : `<button onclick="window.changeUserRole('${u.uid}', 'user')" class="px-3 py-2 bg-green-100 text-green-700 hover:bg-green-200 rounded text-xs font-bold flex items-center justify-center transition-colors">
+                                <i data-lucide="user-plus" class="w-3 h-3 mr-1"></i>升級
+                            </button>`}
+                            <button onclick="window.deleteUserAccount('${u.uid}', '${u.username}')" class="px-3 py-2 bg-red-100 text-red-600 hover:bg-red-200 rounded text-xs font-bold flex items-center justify-center transition-colors">
+                                <i data-lucide="trash-2" class="w-3 h-3 mr-1"></i>刪除帳號
+                            </button>
+                        </div>`}
+                    </div>`;
+                }).join('')}
+            </div>
+        </div>
+
+        <!-- 注意事項 -->
+        <div class="mt-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+            <h3 class="font-bold text-yellow-800 flex items-center mb-3">
+                <i data-lucide="alert-triangle" class="w-4 h-4 mr-2"></i>注意事項
+            </h3>
+            <ul class="text-sm text-yellow-700 space-y-1.5">
+                <li class="flex items-start"><span class="mr-1">•</span><span><strong>新用戶註冊</strong>：所有新用戶預設為一般用戶，不再自動升級為管理員</span></li>
+                <li class="flex items-start"><span class="mr-1">•</span><span><strong>角色變更</strong>：管理員可以將一般用戶升級為管理員，或將管理員降級為一般用戶</span></li>
+                <li class="flex items-start"><span class="mr-1">•</span><span><strong>代管權限</strong>：只有管理員和獲得授權的用戶可以使用「代管案件」功能</span></li>
+                <li class="flex items-start"><span class="mr-1">•</span><span><strong>降級效果</strong>：管理員降級為一般用戶後，將失去代管權限（狀態2）</span></li>
+                <li class="flex items-start"><span class="mr-1">•</span><span><strong>刪除操作</strong>：刪除用戶會同時刪除該用戶的所有案件記錄，無法復原</span></li>
+                <li class="flex items-start"><span class="mr-1">•</span><span>請謹慎操作所有管理功能</span></li>
+            </ul>
+        </div>
+    </div>`;
 }
 function renderForm() {
     const isEdit = !!state.editingRecord;
@@ -2400,9 +2618,26 @@ function renderRepayment() {
     const selectedCase = state.selectedRepaymentId ? state.records.find(r => r.id === state.selectedRepaymentId) : null;
     return `<div class="max-w-2xl mx-auto bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden animate-fade-in"><div class="bg-white border-b border-gray-200 p-4 flex justify-between items-center"><div class="flex items-center"><button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁"><i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i></button><div><h2 class="text-xl font-bold text-gray-800">還款入帳作業</h2><p class="text-sm text-gray-500 mt-1"></p></div></div><div class="flex items-center space-x-3">${state.history.length>0?`<button onclick="window.goBack()" class="flex items-center px-4 py-2 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg transition-colors font-medium shadow-sm"><i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁</button>`:''}${renderUserSwitcher()}</div></div><div class="p-8 space-y-6"><div class="space-y-2 relative"><label class="text-sm font-bold text-gray-600 flex items-center"><i data-lucide="search" class="w-4 h-4 mr-1"></i> 選擇案件 (僅顯示進行中${state.allowedStatus.includes('2')?'/代管':''}/協商)</label><div class="relative"><input type="text" placeholder="輸入編號或姓名搜尋..." value="${state.repaymentSearchTerm}" oninput="window.updateRepaymentSearch(this.value)" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none pl-10"/><i data-lucide="search" class="absolute left-3 top-3.5 text-gray-400 w-4 h-4"></i></div>${dropdownHtml}<select id="repaymentSelect" onchange="window.handleRepaymentSelect(this.value)" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white mt-2" ${isSearching?'hidden':''}><option value="">-- 請選擇案件 --</option>${repaymentCases.map(r=>{ let amount=0; if(r.status==='5') amount=Number(r.negotiationPrincipal)||0; else amount=(Number(r.currentPrincipal)||Number(r.principalPerTerm)||0)+(Number(r.currentInterest)||Number(r.interestPerTerm)||0); return `<option value="${r.id}" ${state.selectedRepaymentId===r.id?'selected':''}>${r.displayId||r.caseNumber||''} - ${r.borrower||''} (每期應繳: $${formatNumber(amount)})</option>`; }).join('')}</select>${selectedCase?`<div class="mt-2 flex justify-between items-center bg-blue-50 p-3 rounded-lg border border-blue-100"><span class="text-sm text-blue-800 font-medium">當前連結案件：${selectedCase.displayId||selectedCase.caseNumber||''} ${selectedCase.borrower}</span><button onclick="window.resetRepaymentSelection()" class="text-xs text-blue-500 hover:text-blue-700 underline">重新選擇</button></div>`:''}</div><div class="bg-gray-50 rounded-xl p-6 border border-gray-200 space-y-4"><div class="flex justify-between items-center border-b border-gray-200 pb-2 mb-4"><h3 class="font-bold text-gray-700 flex items-center"><i data-lucide="edit-2" class="w-4 h-4 mr-2"></i> 入帳資訊</h3>${selectedCase?`<span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-bold flex items-center"><i data-lucide="check" class="w-3 h-3 mr-1"></i> 已連結</span>`:`<span class="bg-amber-100 text-amber-700 px-3 py-1 rounded-full text-xs font-bold flex items-center"><i data-lucide="link" class="w-3 h-3 mr-1"></i> 未連結案件</span>`}</div><div class="grid grid-cols-1 md:grid-cols-2 gap-4"><div><label class="block text-xs font-bold text-gray-500 mb-1">還款日期 (入帳日)</label><input type="date" value="${state.repaymentDate}" oninput="window.updateRepaymentInput('repaymentDate', this.value)" class="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none bg-white"/></div><div class="hidden md:block"></div><div><label class="block text-xs font-bold text-gray-500 mb-1">還款本金</label><div class="relative"><span class="absolute left-3 top-2.5 text-gray-400">$</span><input type="number" value="${state.repaymentPrincipal}" oninput="window.updateRepaymentInput('repaymentPrincipal', this.value)" placeholder="0" class="w-full p-2 pl-7 border rounded focus:ring-2 focus:ring-blue-500 outline-none font-mono text-lg bg-white" ${selectedCase?.status==='2'?'disabled bg-gray-200':''}/></div></div><div><label class="block text-xs font-bold text-gray-500 mb-1">還款利息</label><div class="relative"><span class="absolute left-3 top-2.5 text-gray-400">$</span><input type="number" value="${state.repaymentInterest}" oninput="window.updateRepaymentInput('repaymentInterest', this.value)" placeholder="0" class="w-full p-2 pl-7 border rounded focus:ring-2 focus:ring-blue-500 outline-none font-mono text-lg bg-white" ${selectedCase?.status==='5'?'disabled bg-gray-200':''}/></div></div></div></div><div class="pt-4 flex justify-end border-t border-gray-100 mt-6"><button onclick="window.submitRepayment()" ${!selectedCase?'disabled':''} class="px-6 py-3 rounded-lg shadow-md flex items-center font-bold text-lg transition-all ${selectedCase?'bg-blue-600 text-white hover:bg-blue-700 transform active:scale-95':'bg-gray-300 text-gray-500 cursor-not-allowed'}"><i data-lucide="save" class="w-5 h-5 mr-2"></i> 確認入帳</button></div></div></div>`;
 }
+// === 案件列表捲軸位置跨 renderApp 保存 ===
+// 選項：需求是「從某個動作（編輯/繳款狀態/還款期數）跳出去再回來，卷軸不能跳回頂部」
+// 實現：用 module-level 變數跨 renderApp 保存捲軸
+//   - renderApp 開頭：如果舊的 DOM 裡有 list，存當前 scroll
+//   - renderApp 結尾：如果新頁是 list，恢復到 module-level 變數
+let pendingListScrollTop = 0;
+function restoreListScrollTop() {
+    if (pendingListScrollTop <= 0) return;
+    const listEl = document.querySelector('.desktop-table-view.flex-1.overflow-auto, #mobileListContainer');
+    if (listEl) listEl.scrollTop = pendingListScrollTop;
+}
 function renderApp() {
     const app = document.getElementById('app');
-    // 卷軸位置改由 refreshListUI 內部處理，這裡不插手
+    // ★ 開頭：舊 DOM 還有 list 時，存當前卷軸位置（跨 renderApp 保存）
+    if (state.activeTab === 'list') {
+        const listEl = document.querySelector('.desktop-table-view.flex-1.overflow-auto, #mobileListContainer');
+        if (listEl && listEl.scrollHeight > listEl.clientHeight) {
+            pendingListScrollTop = listEl.scrollTop || 0;
+        }
+    }
     if (!state.currentUser && !state.isDemoMode) { app.innerHTML = renderAuth(); return; }
     const stats = calculateStats();
     let content = '';
@@ -2429,9 +2664,7 @@ function renderApp() {
         else if (state.modalType === 'negotiation') filteredRecs = currentStats.negotiationRecords;
         else {
             let baseRecords = state.records;
-            if (state.isDemoMode) baseRecords = state.records.filter(r => r.ownerUid === 'demo');
-            else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) baseRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
-            else if (!state.isAdmin && !state.isDemoMode) baseRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
+            baseRecords = getVisibleRecords();
             if (state.modalType === 'outstanding') filteredRecs = baseRecords.filter(r => (r.status==='1'||r.status==='3'||r.status==='5') && calculateDerivedData(r).outstanding>0);
             else if (state.modalType === 'currentLent') filteredRecs = baseRecords.filter(r => r.status==='1'||r.status==='3'||r.status==='5');
             else if (state.modalType === 'creditAmount') filteredRecs = baseRecords.filter(r => r.status==='1'||r.status==='3'||r.status==='5');
@@ -2599,10 +2832,28 @@ function renderApp() {
     }
     // 預覽彈卡改為 body-level 容器，不走 renderApp (避開重畫列表造成捲軸跳動)
     if (state.showTrendModal) {
-        modalHtml += `<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4 animate-fade-in backdrop-blur-sm"><div class="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[95vh] sm:max-h-[90vh] flex flex-col"><div class="p-3 sm:p-4 flex justify-between items-center text-white shrink-0 bg-gradient-to-r from-emerald-600 to-teal-600 rounded-t-xl"><h3 class="font-bold flex items-center text-sm sm:text-base"><i data-lucide="trending-up" class="w-4 h-4 sm:w-5 sm:h-5 mr-2"></i>淨收入趨勢圖</h3><button onclick="window.closeTrendModal()" class="hover:bg-white/20 p-1 rounded"><i data-lucide="x" class="w-5 h-5"></i></button></div><div class="p-2 sm:p-4 border-b border-gray-200 flex justify-center space-x-2 sm:space-x-4"><button onclick="window.switchTrendView('month')" class="px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg text-xs sm:text-sm font-medium ${state.trendView==='month'?'bg-emerald-600 text-white':'bg-gray-200 text-gray-700 hover:bg-gray-300'}">近12個月</button><button onclick="window.switchTrendView('year')" class="px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg text-xs sm:text-sm font-medium ${state.trendView==='year'?'bg-emerald-600 text-white':'bg-gray-200 text-gray-700 hover:bg-gray-300'}">歷年</button></div><div class="flex-1 p-2 sm:p-4 overflow-hidden"><div id="trendChart" class="trend-chart"></div></div></div></div>`;
+        modalHtml += buildTrendModalHtml({
+            title: '淨收入趨勢圖',
+            icon: 'trending-up',
+            gradientFrom: 'from-emerald-600',
+            gradientTo: 'to-teal-600',
+            currentView: state.trendView,
+            switchFn: 'switchTrendView',
+            closeFn: 'closeTrendModal',
+            chartId: 'trendChart'
+        });
     }
     app.innerHTML = `<div class="flex h-screen bg-slate-100 font-sans text-gray-800"><div class="w-20 sm:w-64 bg-slate-900 text-white flex flex-col justify-between fixed h-full z-20 transition-all duration-300"><div><div class="p-6 flex items-center justify-center sm:justify-start border-b border-slate-700"><i data-lucide="wallet" class="w-8 h-8 text-emerald-400 mr-0 sm:mr-3"></i><span class="hidden sm:block text-xl font-bold tracking-wider">財務管理</span></div><div class="px-6 py-4 flex items-center border-b border-slate-800 mb-2"><div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold mr-3 ${state.isDemoMode?'bg-amber-500':'bg-slate-700'}">${state.isDemoMode?'T':(state.currentUser?state.currentUser.substring(0,2).toUpperCase():'U')}</div><div class="hidden sm:block"><p class="text-xs text-slate-400">${state.isDemoMode?"試用模式":"已登入"}</p><p class="text-sm font-bold text-white truncate w-32">${state.isDemoMode?"訪客 (不儲存)":state.currentUser}</p></div></div><nav class="mt-4 px-4 space-y-2"><button onclick="window.setActiveTab('dashboard')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab==='dashboard'?'bg-emerald-600':'hover:bg-slate-800'}"><i data-lucide="layout-dashboard" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">營運報表</span></button><button onclick="window.setActiveTab('list')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab==='list'?'bg-emerald-600':'hover:bg-slate-800'}"><i data-lucide="database" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">案件列表</span></button><button onclick="window.setActiveTab('repayment')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab==='repayment'?'bg-emerald-600':'hover:bg-slate-800'}"><i data-lucide="banknote" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">還款輸入</span></button><button onclick="window.open('user_manual.html', '_blank')" class="w-full flex items-center p-3 rounded-lg transition-colors hover:bg-slate-800"><i data-lucide="book-open" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">使用手冊</span></button>${state.isAdmin&&!state.isDemoMode?`<button onclick="window.setActiveTab('admin')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab==='admin'?'bg-emerald-600':'hover:bg-slate-800'}"><i data-lucide="users" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">用戶管理</span></button>`:''}</nav></div><div class="p-4 border-t border-slate-700 space-y-2"><button onclick="window.handleLogout()" class="w-full flex items-center justify-center sm:justify-start p-3 rounded-lg text-slate-400 hover:bg-red-900/30 hover:text-red-400 transition-colors"><i data-lucide="log-out" class="w-5 h-5 mr-0 sm:mr-2"></i><span class="hidden sm:block font-medium">登出系統</span></button></div></div><div class="flex-1 ml-20 sm:ml-64 overflow-x-hidden">${content}</div>${modalHtml}</div>`;
-    if (state.activeTab === 'list') setTimeout(() => window.refreshListUI(), 50);
+    if (state.activeTab === 'list') {
+        setTimeout(() => {
+            window.refreshListUI();
+            // ★ refreshListUI 填完內容後，才設回捲軸位置
+            // (refreshListUI 自己也會設，但設的是 0，所以我們在後面覆蓋)
+            requestAnimationFrame(() => {
+                restoreListScrollTop();
+            });
+        }, 50);
+    }
     lucide.createIcons();
 }
 if (firebaseAvailable && !state.isDemoMode) {
