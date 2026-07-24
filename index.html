@@ -519,6 +519,9 @@ const getPreviewModalContainer = () => {
     if (!container) {
         container = document.createElement('div');
         container.id = 'case-preview-container';
+        container.style.position = 'relative';
+        container.style.zIndex = '9999';
+        container.style.pointerEvents = 'none'; // ★ 預設不攔截事件
         document.body.appendChild(container);
     }
     return container;
@@ -526,13 +529,25 @@ const getPreviewModalContainer = () => {
 const renderPreviewModalToBody = () => {
     const container = getPreviewModalContainer();
     if (state.activePreviewId) {
+        container.style.pointerEvents = 'auto'; // ★ 開啟時才攔截
         container.innerHTML = renderCasePreviewModal();
         // 初始進場時要鎖住 body 捲軸，避免背景被捲動
         document.body.style.overflow = 'hidden';
         if (window.lucide) window.lucide.createIcons();
     } else {
+        // ★ 完全清空 + 解除鎖定 + 確保 backdrop 拿掉
+        container.style.pointerEvents = 'none'; // ★ 關閉後不攔截
         container.innerHTML = '';
+        container.style.display = 'none';
         document.body.style.overflow = '';
+        document.body.style.position = '';
+        document.body.style.width = '';
+        document.body.classList.remove('overflow-hidden');
+        // 下一個 frame 恢復 display，讓下次 open 可以正常顯示
+        requestAnimationFrame(() => {
+            container.style.display = '';
+            container.style.pointerEvents = 'auto'; // ★ 恢復給下次 open
+        });
     }
 };
 window.openCasePreview = (id, event) => {
@@ -2090,10 +2105,8 @@ const computeBadDebtTrend = () => {
     // 計算每個月的總金額
     // ★ 用戶規則：
     //   - 件數 = 全部狀態 3/4/5 (不過濾 balance) - 但排除已執行結案的
-    //   - 金額：所有狀態都用 schedule 反推到該月底 → 看到完整還款軌跡
-    //       初始金額 (起始月)：
-    //         狀態 3/5 = loanAmount - 進入呆帳前已還本金
-    //         狀態 4 = record.arrears (手動設定的結算金額)
+    //   - 金額：統一用 currentArrears (與 Dashboard badDebtAmount 100% 對齊)
+    //       原因：避免 record.loanAmount 為 0 時反推出 0，導致金額莫名增加。
     //   - 起始月 = 最後一次本金+利息都繳的下一個月
     const monthData = months.map(monthKey => {
         const [y, mo] = monthKey.split('-').map(Number);
@@ -2113,30 +2126,12 @@ const computeBadDebtTrend = () => {
             }
             if (!includeThisMonth) return;
             // 計算該月底的待追回金額
-            // ★ 歷史月份：用 schedule 反推 → 看到還款遞減
-            // ★ 當月：用 currentArrears → 與 Dashboard badDebtAmount 一致
-            let balance;
-            if (scheduleEntries.length > 0 && startDate && monthKey !== lastMonth) {
-                // 歷史月份：schedule 反推
-                let initial;
-                if (isStatus4) {
-                    // 狀態 4：用使用者手動設定的結算金額
-                    initial = Math.max(0, Number(record.arrears) || 0);
-                } else {
-                    // 狀態 3 / 5：loanAmount - 進入呆帳前已還本金
-                    const paidBefore = scheduleEntries
-                        .filter(e => e.date < startDate)
-                        .reduce((s, e) => s + (e.principal || 0), 0);
-                    initial = Math.max(0, loanAmount - paidBefore);
-                }
-                const paidAfter = scheduleEntries
-                    .filter(e => e.date >= startDate && e.date <= monthEnd)
-                    .reduce((s, e) => s + (e.principal || 0), 0);
-                balance = Math.max(0, initial - paidAfter);
-            } else {
-                // 當月 或 沒 schedule：用 currentArrears (與 Dashboard 一致)
-                balance = currentArrears;
-            }
+            // ★★★ 統一使用 currentArrears (與 Dashboard badDebtAmount 100% 對齊) ★★★
+            // 原因：若 record.loanAmount 為 0 或漏填時，schedule 反推會算成 0，
+            //      導致歷史月份 (0) < 當月 (currentArrears)，造成金額增加錯覺。
+            // 為求 100% 與 Dashboard 一致，全月都用 currentArrears。
+            // 「還款軌跡」可從明細彈窗的 schedule 看到，這裡不重畫。
+            let balance = currentArrears;
             count++;
             amount += balance;
             if (startKey && monthKey === startKey) {
@@ -2144,7 +2139,11 @@ const computeBadDebtTrend = () => {
                 // 本期新增金額 = 剛成為呆帳時的金額
                 let initialAmount;
                 if (isStatus4) {
-                    initialAmount = Math.max(0, Number(record.arrears) || 0);
+                    // 狀態 4：原始呆帳金額 (不是現在的結算金額)
+                    const paidAfterStart = scheduleEntries
+                        .filter(e => e.date >= startDate)
+                        .reduce((s, e) => s + (e.principal || 0), 0);
+                    initialAmount = Math.max(0, (Number(record.arrears) || 0) + paidAfterStart);
                 } else if (scheduleEntries.length > 0 && startDate) {
                     const paidBefore = scheduleEntries
                         .filter(e => e.date < startDate)
@@ -2403,6 +2402,7 @@ function renderRepayment() {
 }
 function renderApp() {
     const app = document.getElementById('app');
+    // 卷軸位置改由 refreshListUI 內部處理，這裡不插手
     if (!state.currentUser && !state.isDemoMode) { app.innerHTML = renderAuth(); return; }
     const stats = calculateStats();
     let content = '';
@@ -2413,8 +2413,8 @@ function renderApp() {
     else if (state.activeTab === 'admin' && state.isAdmin && !state.isDemoMode) content = renderUserManagement();
     let modalHtml = '';
     if (state.activeModal.type) {
-        const isNote = state.activeModal.type === 'note';
         const record = state.activeModal.record;
+        const isNote = state.activeModal.type === 'note';
         const modalContent = isNote ? record.note : record.schedule;
         modalHtml += `<div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 animate-fade-in backdrop-blur-sm"><div class="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col ${!isNote?'max-h-[80vh]':''}"><div class="bg-gradient-to-r ${!isNote?'from-emerald-600 to-teal-600':'from-blue-600 to-indigo-600'} p-4 flex justify-between items-center text-white shrink-0"><h3 class="font-bold flex items-center"><i data-lucide="${isNote?'file-pen-line':'calendar-days'}" class="w-5 h-5 mr-2"></i> 編輯${isNote?'附註':'還款日程'}</h3><button onclick="window.updateState({activeModal:{type:null,record:null}})" class="hover:bg-white/20 p-1 rounded"><i data-lucide="x" class="w-5 h-5"></i></button></div><div class="p-4 flex-1 overflow-y-auto custom-scrollbar">${isNote?`<textarea id="modalTextarea" class="w-full h-48 p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none resize-none text-sm leading-relaxed" placeholder="請輸入內容...">${record.note||''}</textarea>`:`<div class="p-0 overflow-y-auto flex-1 custom-scrollbar" style="max-height:400px;"><table class="w-full text-left border-collapse"><thead class="bg-gray-50 text-gray-500 text-xs uppercase sticky top-0 z-10"><tr><th class="p-3 border-b">日期 / 紀錄事項</th><th class="p-3 border-b text-center w-16">操作</th></tr></thead><tbody class="divide-y divide-gray-100">${(state.tempScheduleLines||[]).map((line,idx)=>`<tr class="hover:bg-gray-50 group"><td class="p-2"><input type="text" value="${line}" oninput="window.updateScheduleLine(${idx}, this.value)" class="w-full p-2 border border-gray-200 rounded focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-transparent group-hover:bg-white" /></td><td class="p-2 text-center"><button onclick="window.deleteScheduleLine(${idx})" class="text-red-400 hover:text-red-600 p-1 rounded hover:bg-red-50"><i data-lucide="trash-2" class="w-4 h-4"></i></button></td></tr>`).join('')}</tbody></table>${(state.tempScheduleLines||[]).length===0?'<div class="p-8 text-center text-gray-400 text-sm">尚無還款紀錄</div>':''}</div><div class="p-4 border-t border-gray-100 bg-gray-50 shrink-0 flex justify-between items-center"><button onclick="window.addScheduleLine()" class="text-emerald-600 hover:text-emerald-800 text-sm font-medium flex items-center"><i data-lucide="plus" class="w-4 h-4 mr-1"></i> 新增一筆</button></div>`}</div><div class="p-4 border-t border-gray-100 bg-gray-50 text-right shrink-0 flex justify-end gap-2"><button onclick="window.updateState({activeModal:{type:null,record:null}})" class="px-4 py-2 text-gray-600 hover:bg-gray-200 rounded-lg text-sm">取消</button><button onclick="window.saveModalData('${record.id}', '${state.activeModal.type}')" class="px-4 py-2 ${!isNote?'bg-emerald-600 hover:bg-emerald-700':'bg-blue-600 hover:bg-blue-700'} text-white rounded-lg text-sm font-medium">儲存</button></div></div></div>`;
     }
