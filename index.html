@@ -1406,7 +1406,17 @@ window.closeMobileUserMenu = () => {
 // 真正的免密碼生物辨識登入需要 Firebase Cloud Functions 發 custom token
 // 但本實作能達到：手機不解鎖/記不住密碼也能用
 
-const isMobileDevice = () => /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+// 用 feature 偵測，不用 UA — iPadOS/Android/Windows Hello/Mac Touch ID 都支援
+const isMobileDevice = () => {
+    const ua = navigator.userAgent || '';
+    // 明顯的手機/平板 UA
+    if (/iPhone|iPad|iPod|Android|Mobile|Tablet/i.test(ua)) return true;
+    // iPadOS 13+ 假裝是 Mac，靠觸控點數判斷
+    if (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) return true;
+    // Android 平板某些版本
+    if (/Linux/.test(ua) && /Mobile/i.test(ua)) return true;
+    return false;
+};
 
 // 檢查瀏覽器是否支援 WebAuthn
 const isWebAuthnSupported = () => {
@@ -1414,13 +1424,20 @@ const isWebAuthnSupported = () => {
            typeof navigator.credentials !== 'undefined' && typeof navigator.credentials.create === 'function';
 };
 
-// 檢查平台是否支援平台認證器 (iOS Touch ID / Android 指紋)
+// 檢查平台是否支援平台認證器 (iOS Touch ID / Android 指紋 / Mac Touch ID / Windows Hello)
 const isPlatformAuthAvailable = async () => {
     if (!isWebAuthnSupported()) return false;
     try {
         const available = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
         return available;
     } catch (e) { return false; }
+};
+
+// ★ 不再用 UA 卡，改用「能不能生物辨識」當標準 — 任何支援的裝置都能用
+// 但桌機通常沒指紋，所以會 isPlatformAuthAvailable=false 自動走帳密路徑
+const canUseBiometric = async () => {
+    if (!isWebAuthnSupported()) return false;
+    return await isPlatformAuthAvailable();
 };
 
 // 將 ArrayBuffer 轉 base64
@@ -1437,12 +1454,14 @@ const base64ToBuffer = (base64) => {
     return bytes.buffer;
 };
 
-// 啟用生物辨識 (登入後呼叫) - 真正把密碼綁定到這台手機
+// 啟用生物辨識 (登入後呼叫) - 真正把密碼綁定到這台裝置
 window.enableBiometric = async () => {
-    if (!isMobileDevice()) { window.showError("生物辨識僅支援手機版"); return; }
     if (!isWebAuthnSupported()) { window.showError("此瀏覽器不支援生物辨識"); return; }
     if (!firebaseAvailable || !auth.currentUser) { window.showError("請先登入"); return; }
-    if (!await isPlatformAuthAvailable()) { window.showError("此裝置未啟用生物辨識，請到設定開啟 Face ID / 指紋"); return; }
+    if (!await canUseBiometric()) { window.showError("此裝置未啟用生物辨識，請到設定開啟 Face ID / 指紋 / Windows Hello"); return; }
+    if (!isMobileDevice()) { 
+        if (!window.showConfirm("偵測到您目前在桌機/筆電使用，生物辨識仍可綁定但下次用此裝置開啟才能用，確定繼續？")) return;
+    }
 
     // 1. 詢問用戶密碼（要綁定到這台手機）
     const password = prompt("請輸入您的「目前密碼」以綁定到本機生物辨識：\n\n(綁定後這台手機可用 Face ID / 指紋直接登入，不用再打密碼)", "");
@@ -1578,11 +1597,10 @@ window.disableBiometric = async () => {
     }
 };
 
-// 用生物辨識登入 (手機版登入頁)
+// 用生物辨識登入
 window.loginWithBiometric = async () => {
-    if (!isMobileDevice()) { window.showError("生物辨識僅支援手機版"); return; }
     if (!isWebAuthnSupported()) { window.showError("此瀏覽器不支援生物辨識"); return; }
-    if (!await isPlatformAuthAvailable()) { window.showError("此裝置未啟用生物辨識"); return; }
+    if (!await canUseBiometric()) { window.showError("此裝置未啟用生物辨識"); return; }
 
     try {
         // 1. 觸發 WebAuthn 認證
@@ -1627,9 +1645,10 @@ window.loginWithBiometric = async () => {
 };
 
 // 在登入頁自動檢查並顯示「用生物辨識登入」按鈕
+// 在登入頁自動檢查並顯示「用生物辨識登入」按鈕
 const checkBiometricAvailable = async () => {
-    if (!isMobileDevice() || !isWebAuthnSupported()) return false;
-    return await isPlatformAuthAvailable();
+    if (!isWebAuthnSupported()) return false;
+    return await canUseBiometric();
 };
 
 // === 忘記密碼流程 ===
