@@ -1332,6 +1332,16 @@ window.showChangePassword = async () => {
         // 2. 更新密碼
         const { updatePassword } = await import("https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js");
         await updatePassword(auth.currentUser, newPassword);
+        // 密碼改了 → 更新 sessionStorage cache (順便清掉舊的)
+        try {
+            const uid = auth.currentUser.uid;
+            const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'user_directory', uid);
+            const userDocSnap = await getDoc(userDocRef);
+            if (userDocSnap.exists()) {
+                const accountId = userDocSnap.data().username;
+                sessionStorage.setItem('_biometricCache_' + accountId, JSON.stringify({ password: newPassword, ts: Date.now() }));
+            }
+        } catch(e) {}
         window.showSuccess("密碼修改成功！下次登入請用新密碼。");
     } catch (err) {
         console.error("Change password error:", err);
@@ -1454,43 +1464,40 @@ const base64ToBuffer = (base64) => {
     return bytes.buffer;
 };
 
-// 啟用生物辨識 (登入後呼叫) - 真正把密碼綁定到這台裝置
+// 啟用生物辨識 (登入後呼叫) - 用 sessionStorage cache 的密碼，不用再打
 window.enableBiometric = async () => {
     if (!isWebAuthnSupported()) { window.showError("此瀏覽器不支援生物辨識"); return; }
     if (!firebaseAvailable || !auth.currentUser) { window.showError("請先登入"); return; }
     if (!await canUseBiometric()) { window.showError("此裝置未啟用生物辨識，請到設定開啟 Face ID / 指紋 / Windows Hello"); return; }
-    if (!isMobileDevice()) { 
+    if (!isMobileDevice()) {
         if (!window.showConfirm("偵測到您目前在桌機/筆電使用，生物辨識仍可綁定但下次用此裝置開啟才能用，確定繼續？")) return;
     }
 
-    // 1. 詢問用戶密碼（要綁定到這台手機）
-    const password = prompt("請輸入您的「目前密碼」以綁定到本機生物辨識：\n\n(綁定後這台手機可用 Face ID / 指紋直接登入，不用再打密碼)", "");
-    if (!password) return;
-
-    // 2. 先驗證密碼正確
-    const { signInWithEmailAndPassword } = await import("https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js");
-    try {
-        await signInWithEmailAndPassword(auth, auth.currentUser.email, password);
-    } catch (err) {
-        if (err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
-            window.showError("密碼錯誤，請重新輸入");
-        } else {
-            window.showError("驗證失敗：" + err.message);
-        }
-        return;
-    }
-
-    // 3. 取得用戶資料 (accountId = username)
+    // 1. 拿帳號 ID (用於查 cache)
     const uid = auth.currentUser.uid;
     const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'user_directory', uid);
     const userDocSnap = await getDoc(userDocRef);
-    if (!userDocSnap.exists()) {
-        window.showError("找不到用戶資料");
-        return;
-    }
+    if (!userDocSnap.exists()) { window.showError("找不到用戶資料"); return; }
     const userData = userDocSnap.data();
     const accountId = userData.username;
     const email = userData.email;
+
+    // 2. 從 sessionStorage 拿 cache 密碼（剛登入時存的）
+    let password = null;
+    try {
+        const cached = sessionStorage.getItem('_biometricCache_' + accountId);
+        if (cached) {
+            const data = JSON.parse(cached);
+            // 30 天內有效
+            if (Date.now() - data.ts < 30 * 86400 * 1000) password = data.password;
+        }
+    } catch (e) {}
+
+    // 3. 沒 cache 才問（只會發生在很舊的 session，或關分頁後再開的情況）
+    if (!password) {
+        password = prompt("請輸入密碼以綁定生物辨識：\n\n(之後這台裝置用 Face ID / 指紋直接登入，不用再打)\n\n※ 如果您剛登入，這個對話框不會出現", "");
+        if (!password) return;
+    }
 
     // 4. WebAuthn 註冊
     try {
@@ -1517,7 +1524,7 @@ window.enableBiometric = async () => {
 
         const credId = bufferToBase64(credential.rawId);
 
-        // 5. 加密密碼 (用 credentialId 當加密 key)
+        // 5. 加密密碼 (用 credentialId 派生 AES-GCM key)
         const encryptedPassword = await encryptPassword(password, credId);
 
         // 6. 儲存到 Firestore
@@ -1529,8 +1536,7 @@ window.enableBiometric = async () => {
             createdAt: serverTimestamp(),
             deviceInfo: (navigator.userAgent || '').substring(0, 100)
         });
-        localStorage.setItem('biometric_' + credId.substring(0, 8), '1');
-        window.showSuccess(`✓ 生物辨識已綁定！\n\n帳號: ${accountId}\n之後這台手機開 app 可用 Face ID / 指紋直接登入`);
+        window.showSuccess(`✓ 生物辨識已綁定！\n\n帳號: ${accountId}\n之後這台裝置可用 Face ID / 指紋直接登入`);
     } catch (err) {
         console.error("Enable biometric error:", err);
         if (err.name === 'NotAllowedError') {
@@ -1723,6 +1729,8 @@ window.handleAuth = async (e) => {
             const user = userCredential.user;
             await updateProfile(user, { displayName: usernameInput });
             await setDoc(doc(userDirCollection, user.uid), { email: emailInput, uid: user.uid, username: usernameInput, role, allowedStatus, createdAt: serverTimestamp() });
+            // 註冊成功 → cache 密碼到 sessionStorage（之後啟用生物辨識不用再打）
+            try { sessionStorage.setItem('_biometricCache_' + usernameInput, JSON.stringify({ password: passwordInput, ts: Date.now() })); } catch(e) {}
             window.showSuccess("註冊成功！您是本系統的一般用戶。如需管理員權限，請聯繫現有管理員。");
             updateState({ isDemoMode: false, demoModeLocked: false });
         } else {
@@ -1736,6 +1744,8 @@ window.handleAuth = async (e) => {
                 const targetEmail = userDoc.data().email;
                 await signInWithEmailAndPassword(auth, targetEmail, passwordInput);
             }
+            // 登入成功 → cache 密碼到 sessionStorage（之後啟用生物辨識不用再打）
+            try { sessionStorage.setItem('_biometricCache_' + usernameInput, JSON.stringify({ password: passwordInput, ts: Date.now() })); } catch(e) {}
             updateState({ isDemoMode: false, demoModeLocked: false });
         }
     } catch(err) { window.showError(err.message); updateState({ authLoading: false }); }
