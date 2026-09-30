@@ -132,7 +132,7 @@
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
-import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut, updateProfile, setPersistence, browserSessionPersistence } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut, updateProfile, setPersistence, browserSessionPersistence, sendPasswordResetEmail, confirmPasswordReset, verifyPasswordResetCode } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
 import { getFirestore, collection, addDoc, onSnapshot, query, doc, deleteDoc, updateDoc, serverTimestamp, writeBatch, orderBy, getDoc, setDoc, where, getDocs, limit } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
 
 // === 工具：body 捲軸鎖定 (modal 開啟/關閉用) ===
@@ -305,7 +305,7 @@ if (state.isDemoMode) {
 const initialFormState = {
     status: '1', method: '叨簿子', date: '', borrower: '', job: '', idNumber: '', address: '', telephone: '', mobile: '',
     loanAmount: '', disbursed: '', interestRate: '', specialRate: '', agent: '', terms: '', repayDay: '',
-    principalPerTerm: '', interestPerTerm: '', currentPrincipal: '', currentInterest: '', note: '', schedule: '', negotiationPrincipal: '', executionStatus: ''
+    principalPerTerm: '', interestPerTerm: '', currentPrincipal: '', currentInterest: '', note: '', schedule: '', negotiationPrincipal: '', executionStatus: '', badDebtStartMonth: '', negotiationStartMonth: ''
 };
 let formData = { ...initialFormState };
 
@@ -333,9 +333,39 @@ const extractDatesFromSchedule = (scheduleStr) => {
 const sortScheduleLines = (lines) => [...lines].sort((a, b) => {
     const datesA = extractDatesFromSchedule(a), datesB = extractDatesFromSchedule(b);
     const dateA = datesA.length ? datesA[0] : null, dateB = datesB.length ? datesB[0] : null;
-    if (dateA && dateB) return dateA - dateB;
-    if (dateA) return -1; if (dateB) return 1; return 0;
+    const validA = dateA && !isNaN(dateA.getTime());
+    const validB = dateB && !isNaN(dateB.getTime());
+    if (!validA && !validB) return 0;
+    if (!validA) return 1;   // 無效日期排後面
+    if (!validB) return -1;
+    return dateA - dateB;
 });
+// === 智慧日期解析（Bug 17 fix） ===
+// 支援格式：YYYY-MM-DD, YYYY/MM/DD, YYYYMMDD, YYYY年MM月DD日, MM/DD/YYYY
+const tryParseDate = (str) => {
+    if (!str) return null;
+    const stdMatch = String(str).match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+    if (stdMatch) {
+        const d = new Date(`${stdMatch[1]}-${stdMatch[2].padStart(2,'0')}-${stdMatch[3].padStart(2,'0')}`);
+        if (!isNaN(d.getTime())) return d;
+    }
+    const cnMatch = String(str).match(/(\d{4})年(\d{1,2})月(\d{1,2})日?/);
+    if (cnMatch) {
+        const d = new Date(`${cnMatch[1]}-${cnMatch[2].padStart(2,'0')}-${cnMatch[3].padStart(2,'0')}`);
+        if (!isNaN(d.getTime())) return d;
+    }
+    const noSepMatch = String(str).match(/^(\d{4})(\d{2})(\d{2})$/);
+    if (noSepMatch) {
+        const d = new Date(`${noSepMatch[1]}-${noSepMatch[2]}-${noSepMatch[3]}`);
+        if (!isNaN(d.getTime())) return d;
+    }
+    const usMatch = String(str).match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    if (usMatch) {
+        const d = new Date(`${usMatch[3]}-${usMatch[1].padStart(2,'0')}-${usMatch[2].padStart(2,'0')}`);
+        if (!isNaN(d.getTime())) return d;
+    }
+    return null;
+};
 // === 計算第一個應繳日 (借款日 >= 還款日 → 借款當月不算第一期) ===
 // 規則：
 //   - 借款日.day >= 還款日.day → 回傳 null（表示「當月不算第一期」，沿用預設「借款月 + 1」）
@@ -371,14 +401,19 @@ const getPaymentStatus = (record) => {
     const isNegotiation = String(record.status) === '5';
     // ★ Q2: repayDay 沒填 + 借款當月 + 非協商 → 顯示「無還款日設定」（不觸發逾期）
     const showNoPayDaySetting = !repayDay && isInLoanMonth && !isNegotiation;
+    // ★ Bug 14 fix: 沒填 repayDay → fallback 月底
+    let effectiveRepayDay = repayDay;
+    if (!effectiveRepayDay) {
+        effectiveRepayDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    }
     let isOverdue = false;
-    if (!isPaidThisMonth && repayDay) {
+    if (!isPaidThisMonth && effectiveRepayDay) {
         const currentDay = now.getDate();
         // ★ Q1: 借款當月、且借款日 >= 還款日 → 當月不可能還款，不算逾期
         // 條件：今天是借款月、不是協商、借款日 >= 還款日
-        if (isInLoanMonth && !isNegotiation && loanDate.getDate() >= repayDay) {
+        if (isInLoanMonth && !isNegotiation && loanDate.getDate() >= (repayDay || 999)) {
             isOverdue = false; // 借款當月不算逾期
-        } else if (currentDay >= repayDay) {
+        } else if (currentDay >= effectiveRepayDay) {
             isOverdue = true;
         }
     }
@@ -387,17 +422,23 @@ const getPaymentStatus = (record) => {
 const parseSchedule = (scheduleStr) => {
     if (!scheduleStr) return [];
     const lines = scheduleStr.split('\n').filter(l => l.trim() !== '');
-    return lines.map(line => {
-        const dateMatch = line.match(/^(\d{4}[-\/]\d{1,2}[-\/]\d{1,2})/);
+    const results = [];
+    lines.forEach((line, idx) => {
         let pMatch = line.match(/本金:(\d+)/);
         let iMatch = line.match(/利息:(\d+)/);
         if (!pMatch) pMatch = line.match(/P:(\d+)/);
         if (!iMatch) iMatch = line.match(/I:(\d+)/);
-        const date = dateMatch ? new Date(dateMatch[1].replace(/\//g, '-')) : null;
         const principal = pMatch ? parseInt(pMatch[1], 10) : 0;
         const interest = iMatch ? parseInt(iMatch[1], 10) : 0;
-        return { date, principal, interest, raw: dateMatch ? `${dateMatch[0]} 本金:${principal} 利息:${interest}` : line };
-    }).filter(item => item.date !== null);
+        const date = tryParseDate(line);
+        if (date) {
+            const dateStr = date.toISOString().split('T')[0];
+            results.push({ date, principal, interest, raw: `${dateStr} 本金:${principal} 利息:${interest}` });
+        } else {
+            console.warn(`[parseSchedule] 第 ${idx+1} 行無法解析日期，已跳過：${line}`);
+        }
+    });
+    return results;
 };
 const cleanFormDataForSave = (data) => {
     const cleaned = { ...data };
@@ -408,7 +449,7 @@ const cleanFormDataForSave = (data) => {
         if (cleaned[field] !== undefined && cleaned[field] !== null && cleaned[field] !== '') cleaned[field] = Number(cleaned[field]) || 0;
         else cleaned[field] = 0;
     });
-    const stringFields = ['borrower','job','idNumber','address','telephone','mobile','agent','repayDay','note','method','status','date','executionStatus'];
+    const stringFields = ['borrower','job','idNumber','address','telephone','mobile','agent','repayDay','note','method','status','date','executionStatus','badDebtStartMonth','negotiationStartMonth'];
     stringFields.forEach(field => {
         if (cleaned[field] === undefined || cleaned[field] === null) cleaned[field] = '';
         else cleaned[field] = String(cleaned[field]);
@@ -1034,82 +1075,221 @@ const calculateStats = () => {
         else if (r.status === '4') s.status4Income += interestIncome;
         else if (r.status === '5') s.status5Income += interestIncome;
         s.totalIncome += interestIncome;
-        if (r.status === '5') {
+        // ===== 統計累積型指標 (累計總收入/累計呆帳/累計債權/累計在外本金) =====
+        // 注意：所有 status 都算在外本金，但 status=4 的 outstanding 只算 calc.outstanding（不漏掉手動輸入）
+        // Bug 12: currentLent 不含 status=2 (代管是託管不算放款)
+        if (r.status === '1' || r.status === '3' || r.status === '5') {
             s.creditAmount += calc.arrears;
             s.currentLent += Number(r.loanAmount) || 0;
             s.outstanding += calc.outstanding;
-            s.negotiationDue += negotiationPrincipal;
+        } else if (r.status === '2') {
+            // status=2 (代管) 仍算在外本金，但不進 currentLent (Bug 12)
+            s.outstanding += calc.outstanding;
+        }
+        if (r.status === '4') {
+            s.outstanding += calc.outstanding; // Bug 11 fix: status=4 不漏 outstanding
+        }
+        // ===== 月份計算 (本月應收/本月已收/本月款差) — 統一區塊 =====
+        // ★ 月應收規則：
+        //   - status=1 (進行中)：月應收 = 本金+利息, 月應收息 = 利息
+        //   - status=2 (代管)：月應收 = 管理費, 月應收息 = 0 (管理費不是利息)
+        //   - status=5 (協商)：月應收 = 協商本金, 月應收息 = 0 (協商無息)
+        //   - status=0/3/4 (結案/呆帳)：本月 schedule 有 entry 才算 (用 schedule 實際金額)
+        // ★ 月已收規則 (從 還款期數 判斷)：
+        //   - status=1/2/5：若 lastRepaymentDate 在當月 → 本月已收 = 合約月付
+        //   - status=0/3/4：用 schedule 實際紀錄
+        //   - Fallback：schedule 內有當月 entry
+        if (r.status === '1') {
+            s.monthDue += (principal + termInterest);
+            s.monthInterestDue += termInterest;
+        } else if (r.status === '2') {
+            // 代管：管理費不算利息 (進月應收款，不進月應收息)
+            s.monthDue += termInterest;
+            s.hasManagedCases = true;
+            s.totalManagementFee += termInterest;
+            s.managedCases++;
+            s.managedRecords.push(r);
+        } else if (r.status === '5') {
+            // ★ 蔡依萱式: 判斷協議是否已開始
+            const isPreAgreement = r.negotiationStartMonth && /^\d{4}-\d{2}$/.test(r.negotiationStartMonth) && (() => {
+                const [y, m] = r.negotiationStartMonth.split('-').map(Number);
+                if (currentYear < y) return true;
+                if (currentYear === y && currentMonth < m - 1) return true;
+                return false;
+            })();
+            if (isPreAgreement) {
+                // 協議前 → 用 status=1 邏輯
+                s.monthDue += (principal + termInterest);
+                if (termInterest > 0) s.monthInterestDue += termInterest;
+            } else {
+                // 協議生效 → 用協商邏輯
+                s.monthDue += negotiationPrincipal;
+                if (termInterest > 0) s.monthInterestDue += termInterest;
+            }
+        } else if (r.status === '0' || r.status === '3' || r.status === '4') {
+            // 結案/呆帳：本月 schedule 有還款才計入
+            let principalIn = 0, interestIn = 0;
             const entries = parseSchedule(r.schedule);
-            const currentMonthPaid = entries.filter(e => e.date && e.date.getFullYear() === currentYear && e.date.getMonth() === currentMonth).reduce((sum, e) => sum + e.principal, 0);
+            const monthEntries = entries.filter(e => e.date && e.date.getFullYear() === currentYear && e.date.getMonth() === currentMonth);
+            monthEntries.forEach(e => {
+                principalIn += e.principal;
+                interestIn += e.interest;
+            });
+            // ★ Fallback: schedule 沒記但 lastRepaymentDate 在當月 → 用合約的 interestPerTerm (結案前的月息)
+            if (principalIn === 0 && interestIn === 0) {
+                const lastDate = r.lastRepaymentDate ? new Date(r.lastRepaymentDate) : null;
+                const lastInMonth = lastDate && !isNaN(lastDate.getTime()) &&
+                    lastDate.getFullYear() === currentYear && lastDate.getMonth() === currentMonth;
+                if (lastInMonth) {
+                    interestIn = Number(r.interestPerTerm) || 0;
+                }
+            }
+            s.monthDue += (principalIn + interestIn);
+            s.monthInterestDue += interestIn;
+        }
+
+        // ===== 本月已收/已收息 (從 還款期數 判斷) =====
+        if (['0','1','2','3','4','5'].includes(r.status)) {
+            let actualP = 0, actualI = 0;
+            if (r.status === '0' || r.status === '3' || r.status === '4') {
+                // 結案/呆帳：用 schedule 實際紀錄
+                const entries = parseSchedule(r.schedule);
+                const monthEntries = entries.filter(e => e.date && e.date.getFullYear() === currentYear && e.date.getMonth() === currentMonth);
+                monthEntries.forEach(e => {
+                    actualP += e.principal;
+                    actualI += e.interest;
+                });
+                // ★ Fallback: schedule 沒記但 lastRepaymentDate 在當月 → 用合約的 interestPerTerm
+                if (actualP === 0 && actualI === 0) {
+                    const lastDate = r.lastRepaymentDate ? new Date(r.lastRepaymentDate) : null;
+                    const lastInMonth = lastDate && !isNaN(lastDate.getTime()) &&
+                        lastDate.getFullYear() === currentYear && lastDate.getMonth() === currentMonth;
+                    if (lastInMonth) {
+                        actualI = Number(r.interestPerTerm) || 0;
+                    }
+                }
+            } else {
+                // status=1/2/5：用 lastRepaymentDate 當主信號
+                const lastDate = r.lastRepaymentDate ? new Date(r.lastRepaymentDate) : null;
+                const lastInCurrentMonth = lastDate && !isNaN(lastDate.getTime()) &&
+                    lastDate.getFullYear() === currentYear && lastDate.getMonth() === currentMonth;
+
+                if (lastInCurrentMonth) {
+                    if (r.status === '5') {
+                        // 協商：本金 + 可能的利息 (interestPerTerm > 0 時才算利息)
+                        actualP = negotiationPrincipal;
+                        actualI = termInterest;
+                    } else if (r.status === '2') {
+                        actualP = termInterest;  // 代管管理費進已收款
+                        actualI = 0;  // 管理費不是利息
+                    } else {
+                        actualP = principal;
+                        actualI = termInterest;
+                    }
+                } else {
+                    // Fallback：用 schedule 實際紀錄
+                    const entries = parseSchedule(r.schedule);
+                    const monthEntries = entries.filter(e => e.date && e.date.getFullYear() === currentYear && e.date.getMonth() === currentMonth);
+                    monthEntries.forEach(e => {
+                        actualP += e.principal;
+                        actualI += e.interest;
+                    });
+                }
+            }
+            s.monthActualCollected += (actualP + actualI);
+            s.monthActualInterestCollected += actualI;
+        }
+        // ===== 協商專屬 =====
+        if (r.status === '5') {
+            // ★ 蔡依萱-style: 判斷協議是否已開始
+            // 若 negotiationStartMonth 有設 + 當月 < 開始月 → 還在協議前 → 用 status=1 邏輯
+            const isPreAgreement = r.negotiationStartMonth && /^\d{4}-\d{2}$/.test(r.negotiationStartMonth) && (() => {
+                const [y, m] = r.negotiationStartMonth.split('-').map(Number);
+                if (currentYear < y) return true;
+                if (currentYear === y && currentMonth < m - 1) return true;
+                return false;
+            })();
+
+            if (!isPreAgreement) {
+                s.negotiationDue += negotiationPrincipal;
+            }
+            // ★ 協商已收：包含 P+I (有些協商會有利息)
+            const entries = parseSchedule(r.schedule);
+            const currentMonthEntries = entries.filter(e => e.date && e.date.getFullYear() === currentYear && e.date.getMonth() === currentMonth);
+            const currentMonthPaid = currentMonthEntries.reduce((sum, e) => sum + e.principal + e.interest, 0);
             s.negotiationCollected += currentMonthPaid;
-            s.monthDue += negotiationPrincipal;
-            s.monthActualCollected += currentMonthPaid;
             s.badDebtAmount += calc.arrears;
             s.activeBadDebtCount++;
             s.badDebtCases.push(r);
             s.negotiationCases++;
             s.negotiationRecords.push(r);
-            const { isPaid } = getPaymentStatus(r);
-            if (!isPaid) s.monthDiff += negotiationPrincipal;
-        } else if (r.status === '1' || r.status === '3') {
-            s.creditAmount += calc.arrears;
-            s.currentLent += Number(r.loanAmount) || 0;
-            s.outstanding += calc.outstanding;
-            if (r.status === '1') {
-                s.monthDue += (principal + termInterest);
-                s.monthInterestDue += termInterest;
-            }
-            if (r.status === '3') {
-                s.badDebtAmount += calc.arrears;
-                s.activeBadDebtCount++;
-                s.badDebtCases.push(r);
-            }
+        }
+        // ===== 呆帳分類 =====
+        if (r.status === '3') {
+            s.badDebtAmount += calc.arrears;
+            s.activeBadDebtCount++;
+            s.badDebtCases.push(r);
         } else if (r.status === '4') {
             s.badDebtAmount += calc.arrears;
             s.closedBadDebtCount++;
             s.badDebtCases.push(r);
-        } else if (r.status === '2') {
-            s.monthDue += termInterest;
-            s.monthInterestDue += termInterest;
-            s.hasManagedCases = true;
-            s.totalManagementFee += termInterest;
-            s.managedCases++;
-            s.managedRecords.push(r);
         }
+        // ===== 案件分類 (active / closed / unpaid) =====
         if (r.status === '0') { s.normalClosedCount++; s.closedRecords.push(r); }
         else if (r.status === '1') {
             s.activeCases++; s.activeRecords.push(r);
             const { isOverdue } = getPaymentStatus(r);
             if (isOverdue) { s.unpaidCount++; s.unpaidRecords.push(r); }
-        } else if (r.status === '2') {
-            const { isPaid } = getPaymentStatus(r);
-            if (!isPaid) {
-                s.monthDiff += termInterest;
-                s.monthInterestDiff += termInterest;
-            }
-        }
-        if (r.status === '1' || r.status === '2' || r.status === '5') {
-            const entries = parseSchedule(r.schedule);
-            const currentMonthEntries = entries.filter(e => e.date && e.date.getFullYear() === currentYear && e.date.getMonth() === currentMonth);
-            currentMonthEntries.forEach(e => {
-                s.monthActualCollected += e.principal + e.interest;
-                s.monthActualInterestCollected += e.interest;
-            });
         }
         if (r.borrower) uniqueBorrowers.add(r.borrower);
     });
     s.borrowers = uniqueBorrowers.size;
     s.netIncome = s.totalIncome - s.badDebtAmount;
-    s.monthDiff = s.monthDue - s.monthActualCollected; if (s.monthDiff < 0) s.monthDiff = 0;
-    s.monthInterestDiff = s.monthInterestDue - s.monthActualInterestCollected; if (s.monthInterestDiff < 0) s.monthInterestDiff = 0;
+    // ===== 月差計算 (Bug 4 fix: 不 clamp 0) =====
+    s.monthDiff = s.monthDue - s.monthActualCollected;
+    s.monthInterestDiff = s.monthInterestDue - s.monthActualInterestCollected;
     s.monthCollected = s.monthActualCollected;
     s.monthInterestCollected = s.monthActualInterestCollected;
     return s;
+};
+// === isCurrentMonthDue helper ===
+// 判斷案件 r 在給定年月是否「本月該繳款」
+// status=5 (協商): 永遠視為當月該繳
+// status=1/2: 用首期判定 — 借款月已過 → 該繳；借款月當月 → 看日期
+// status=3 (呆帳): 跟 status=1 一樣（用首期判定）
+// status=4 (已結案): 永不視為當月該繳
+const isCurrentMonthDue = (r, year, month) => {
+    if (!r) return false;
+    if (r.status === '5') return true; // 協商：永遠該繳
+    if (r.status === '4' || r.status === '0') return false; // 已結案/已清償
+    if (r.status !== '1' && r.status !== '2' && r.status !== '3') return false;
+    // 已繳過 → 當月不算「應繳」
+    const entries = parseSchedule(r.schedule);
+    const currentMonthPaid = entries.some(e => e.date && e.date.getFullYear() === year && e.date.getMonth() === month);
+    if (currentMonthPaid) return false;
+    if (r.lastRepaymentDate) {
+        const lastDate = new Date(r.lastRepaymentDate);
+        if (lastDate.getFullYear() === year && lastDate.getMonth() === month) return false;
+    }
+    // 用首期判定
+    const loanDate = r.date ? new Date(String(r.date).replace(/\//g, '-')) : null;
+    if (!loanDate || isNaN(loanDate.getTime())) return true; // 無借款日 → 預設該繳
+    const loanYear = loanDate.getFullYear(), loanMonth = loanDate.getMonth();
+    if (year > loanYear || (year === loanYear && month > loanMonth)) return true; // 已過借款月
+    if (year < loanYear || (year === loanYear && month < loanMonth)) return false; // 借款月還沒到
+    // 借款月當月：看是否到還款日
+    let repayDay = null;
+    if (r.repayDay) { const m = String(r.repayDay).match(/(\d+)/); if (m) repayDay = parseInt(m[1], 10); }
+    if (!repayDay) return true; // 沒填還款日 → 預設該繳
+    return new Date().getDate() >= repayDay;
 };
 const getCardConfig = (id) => {
     const stats = calculateStats(); if (!stats) return null;
     const layoutItem = state.cardLayout.find(c => c.id === id);
     const width = layoutItem ? layoutItem.width : 1;
+    // Bug 4 fix: 款差/息差動態標籤 — 負值顯示「溢繳」「溢收息」綠色
+    const monthDiffNegative = stats.monthDiff < 0;
+    const monthInterestDiffNegative = stats.monthInterestDiff < 0;
     const config = {
         totalIncome: { label: "總收入 (累計)", value: stats.totalIncome, type: "primary", icon: "wallet", isCurrency: true },
         netIncome: { label: "淨收入", value: stats.netIncome, type: "primary", icon: "trending-up", isCurrency: true },
@@ -1118,8 +1298,8 @@ const getCardConfig = (id) => {
         currentLent: { label: "目前放款額", value: stats.currentLent, type: "warning", icon: "credit-card", isCurrency: true },
         monthDue: { label: "本月應收款", value: stats.monthDue, type: "primary", icon: "credit-card", compact: true, isCurrency: true },
         monthCollected: { label: "本月已收款", value: stats.monthCollected, type: "primary", icon: "check", compact: true, isCurrency: true },
-        monthDiff: { label: "本月款差", value: stats.monthDiff, type: "critical", icon: "alert-circle", compact: true, isCurrency: true },
-        monthInterestDiff: { label: "本月息差", value: stats.monthInterestDiff, type: "critical", icon: "alert-circle", compact: true, isCurrency: true },
+        monthDiff: { label: monthDiffNegative ? "本月溢繳" : "本月款差", value: stats.monthDiff, type: monthDiffNegative ? "success" : "critical", icon: monthDiffNegative ? "check" : "alert-circle", compact: true, isCurrency: true },
+        monthInterestDiff: { label: monthInterestDiffNegative ? "本月溢收息" : "本月息差", value: stats.monthInterestDiff, type: monthInterestDiffNegative ? "success" : "critical", icon: monthInterestDiffNegative ? "check" : "alert-circle", compact: true, isCurrency: true },
         monthInterestDue: { label: "本月應收息", value: stats.monthInterestDue, type: "primary", icon: "trending-up", compact: true, isCurrency: true },
         monthInterestCollected: { label: "本月已收息", value: stats.monthInterestCollected, type: "primary", icon: "check", compact: true, isCurrency: true },
         totalManagementFee: { label: "本月管理費", value: stats.totalManagementFee, type: "primary", icon: "credit-card", isCurrency: true },
@@ -1133,6 +1313,379 @@ const getCardConfig = (id) => {
 window.setActiveTab = (tab) => updateState({ activeTab: tab, modalType: null });
 window.updateState = (updates) => updateState(updates);
 window.toggleAuthMode = () => updateState({ isRegistering: !state.isRegistering });
+
+// === 修改密碼 (需先 re-auth) ===
+window.showChangePassword = async () => {
+    if (!firebaseAvailable || !auth.currentUser) { window.showError("請先登入"); return; }
+    const oldPassword = prompt("請輸入「目前的密碼」以驗證身份：", "");
+    if (!oldPassword) return;
+    const newPassword = prompt("請輸入「新密碼」（至少 6 個字元）：", "");
+    if (!newPassword || newPassword.length < 6) { window.showError("新密碼至少 6 個字元"); return; }
+    const confirmPassword = prompt("請再輸入一次「新密碼」確認：", "");
+    if (newPassword !== confirmPassword) { window.showError("兩次密碼輸入不一致"); return; }
+    try {
+        // 1. 用舊密碼 re-auth
+        const { EmailAuthProvider, reauthenticateWithCredential } = await import("https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js");
+        const email = auth.currentUser.email;
+        const credential = EmailAuthProvider.credential(email, oldPassword);
+        await reauthenticateWithCredential(auth.currentUser, credential);
+        // 2. 更新密碼
+        const { updatePassword } = await import("https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js");
+        await updatePassword(auth.currentUser, newPassword);
+        window.showSuccess("密碼修改成功！下次登入請用新密碼。");
+    } catch (err) {
+        console.error("Change password error:", err);
+        if (err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+            window.showError("舊密碼錯誤，請重新輸入");
+        } else if (err.code === 'auth/weak-password') {
+            window.showError("密碼強度不足，請使用更複雜的密碼");
+        } else {
+            window.showError("修改失敗：" + err.message);
+        }
+    }
+};
+
+// === 手機版使用者選單 (底部抽屜) ===
+window.openMobileUserMenu = () => {
+    // 移除舊的
+    document.getElementById('mobileUserMenuSheet')?.remove();
+    document.getElementById('mobileUserMenuBackdrop')?.remove();
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'mobileUserMenuBackdrop';
+    backdrop.className = 'sm:hidden fixed inset-0 bg-black/50 z-40 animate-fade-in';
+    backdrop.onclick = window.closeMobileUserMenu;
+    document.body.appendChild(backdrop);
+
+    const sheet = document.createElement('div');
+    sheet.id = 'mobileUserMenuSheet';
+    sheet.className = 'sm:hidden fixed bottom-0 left-0 right-0 bg-slate-900 text-white rounded-t-2xl z-50 animate-fade-in shadow-2xl';
+    sheet.style.cssText = 'animation: slideUp 0.3s ease-out;';
+    sheet.innerHTML = `
+        <div class="flex justify-center pt-2 pb-1"><div class="w-12 h-1 bg-slate-600 rounded-full"></div></div>
+        <div class="px-6 pt-3 pb-6">
+            <div class="flex items-center mb-5 pb-4 border-b border-slate-700">
+                <div class="w-12 h-12 rounded-full flex items-center justify-center text-base font-bold mr-3 bg-slate-700">${(state.currentUser||'U').substring(0,2).toUpperCase()}</div>
+                <div>
+                    <p class="text-xs text-slate-400">已登入</p>
+                    <p class="text-base font-bold">${state.currentUser||''}</p>
+                </div>
+            </div>
+            <button onclick="window.showChangePassword(); window.closeMobileUserMenu();" class="w-full flex items-center p-4 rounded-lg hover:bg-slate-800 transition-colors mb-2">
+                <i data-lucide="key" class="w-5 h-5 mr-3 text-emerald-400"></i>
+                <span class="text-base">更改密碼</span>
+            </button>
+            <button id="mobileBiometricBtn" onclick="window.enableBiometric(); window.closeMobileUserMenu();" class="w-full flex items-center p-4 rounded-lg hover:bg-slate-800 transition-colors mb-2">
+                <i data-lucide="fingerprint" class="w-5 h-5 mr-3 text-blue-400"></i>
+                <span class="text-base">啟用生物辨識登入</span>
+            </button>
+            <button onclick="window.handleLogout(); window.closeMobileUserMenu();" class="w-full flex items-center p-4 rounded-lg hover:bg-red-900/30 text-red-400 transition-colors">
+                <i data-lucide="log-out" class="w-5 h-5 mr-3"></i>
+                <span class="text-base">登出系統</span>
+            </button>
+            <button onclick="window.closeMobileUserMenu()" class="w-full mt-3 py-3 text-sm text-slate-400 hover:text-white transition-colors">取消</button>
+        </div>
+    `;
+    // slideUp animation
+    if (!document.getElementById('mobile-sheet-style')) {
+        const style = document.createElement('style');
+        style.id = 'mobile-sheet-style';
+        style.textContent = '@keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }';
+        document.head.appendChild(style);
+    }
+    document.body.appendChild(sheet);
+    if (window.lucide) window.lucide.createIcons();
+};
+window.closeMobileUserMenu = () => {
+    document.getElementById('mobileUserMenuSheet')?.remove();
+    document.getElementById('mobileUserMenuBackdrop')?.remove();
+};
+
+// === 生物辨識登入 (WebAuthn) ===
+// 限制說明：純前端實作，生物辨識通過後只能「自動填入 Email」+「用戶輸入密碼」
+// 真正的免密碼生物辨識登入需要 Firebase Cloud Functions 發 custom token
+// 但本實作能達到：手機不解鎖/記不住密碼也能用
+
+const isMobileDevice = () => /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
+// 檢查瀏覽器是否支援 WebAuthn
+const isWebAuthnSupported = () => {
+    return typeof window.PublicKeyCredential !== 'undefined' || 
+           typeof navigator.credentials !== 'undefined' && typeof navigator.credentials.create === 'function';
+};
+
+// 檢查平台是否支援平台認證器 (iOS Touch ID / Android 指紋)
+const isPlatformAuthAvailable = async () => {
+    if (!isWebAuthnSupported()) return false;
+    try {
+        const available = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+        return available;
+    } catch (e) { return false; }
+};
+
+// 將 ArrayBuffer 轉 base64
+const bufferToBase64 = (buffer) => {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+};
+const base64ToBuffer = (base64) => {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
+};
+
+// 啟用生物辨識 (登入後呼叫) - 真正把密碼綁定到這台手機
+window.enableBiometric = async () => {
+    if (!isMobileDevice()) { window.showError("生物辨識僅支援手機版"); return; }
+    if (!isWebAuthnSupported()) { window.showError("此瀏覽器不支援生物辨識"); return; }
+    if (!firebaseAvailable || !auth.currentUser) { window.showError("請先登入"); return; }
+    if (!await isPlatformAuthAvailable()) { window.showError("此裝置未啟用生物辨識，請到設定開啟 Face ID / 指紋"); return; }
+
+    // 1. 詢問用戶密碼（要綁定到這台手機）
+    const password = prompt("請輸入您的「目前密碼」以綁定到本機生物辨識：\n\n(綁定後這台手機可用 Face ID / 指紋直接登入，不用再打密碼)", "");
+    if (!password) return;
+
+    // 2. 先驗證密碼正確
+    const { signInWithEmailAndPassword } = await import("https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js");
+    try {
+        await signInWithEmailAndPassword(auth, auth.currentUser.email, password);
+    } catch (err) {
+        if (err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+            window.showError("密碼錯誤，請重新輸入");
+        } else {
+            window.showError("驗證失敗：" + err.message);
+        }
+        return;
+    }
+
+    // 3. 取得用戶資料 (accountId = username)
+    const uid = auth.currentUser.uid;
+    const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'user_directory', uid);
+    const userDocSnap = await getDoc(userDocRef);
+    if (!userDocSnap.exists()) {
+        window.showError("找不到用戶資料");
+        return;
+    }
+    const userData = userDocSnap.data();
+    const accountId = userData.username;
+    const email = userData.email;
+
+    // 4. WebAuthn 註冊
+    try {
+        const challenge = crypto.getRandomValues(new Uint8Array(32));
+        const credential = await navigator.credentials.create({
+            publicKey: {
+                challenge,
+                rp: { name: "財務管理系統" },
+                user: {
+                    id: new TextEncoder().encode(uid),
+                    name: accountId,
+                    displayName: accountId
+                },
+                pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+                authenticatorSelection: {
+                    authenticatorAttachment: "platform",
+                    userVerification: "required",
+                    residentKey: "preferred"
+                },
+                timeout: 60000,
+                attestation: "none"
+            }
+        });
+
+        const credId = bufferToBase64(credential.rawId);
+
+        // 5. 加密密碼 (用 credentialId 當加密 key)
+        const encryptedPassword = await encryptPassword(password, credId);
+
+        // 6. 儲存到 Firestore
+        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'user_credentials', credId), {
+            uid: uid,
+            accountId: accountId,
+            email: email,
+            encryptedPassword: encryptedPassword,
+            createdAt: serverTimestamp(),
+            deviceInfo: (navigator.userAgent || '').substring(0, 100)
+        });
+        localStorage.setItem('biometric_' + credId.substring(0, 8), '1');
+        window.showSuccess(`✓ 生物辨識已綁定！\n\n帳號: ${accountId}\n之後這台手機開 app 可用 Face ID / 指紋直接登入`);
+    } catch (err) {
+        console.error("Enable biometric error:", err);
+        if (err.name === 'NotAllowedError') {
+            window.showError("已取消生物辨識設定");
+        } else {
+            window.showError("啟用失敗：" + err.message);
+        }
+    }
+};
+
+// 加密密碼 (用 credentialId 派生 AES-GCM key)
+async function encryptPassword(password, credentialId) {
+    const enc = new TextEncoder();
+    const salt = new Uint8Array(16); // 常數 salt (簡化)
+    const keyMaterial = await crypto.subtle.importKey(
+        'raw', enc.encode(credentialId),
+        { name: 'PBKDF2' }, false, ['deriveKey']
+    );
+    const key = await crypto.subtle.deriveKey(
+        { name: 'PBKDF2', salt, iterations: 10000, hash: 'SHA-256' },
+        keyMaterial,
+        { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+    );
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv }, key, enc.encode(password)
+    );
+    return { iv: Array.from(iv), ciphertext: Array.from(new Uint8Array(ciphertext)) };
+}
+
+async function decryptPassword(encrypted, credentialId) {
+    const enc = new TextEncoder();
+    const dec = new TextDecoder();
+    const salt = new Uint8Array(16);
+    const keyMaterial = await crypto.subtle.importKey(
+        'raw', enc.encode(credentialId),
+        { name: 'PBKDF2' }, false, ['deriveKey']
+    );
+    const key = await crypto.subtle.deriveKey(
+        { name: 'PBKDF2', salt, iterations: 10000, hash: 'SHA-256' },
+        keyMaterial,
+        { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+    );
+    const iv = new Uint8Array(encrypted.iv);
+    const ciphertext = new Uint8Array(encrypted.ciphertext);
+    const decrypted = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv }, key, ciphertext
+    );
+    return dec.decode(decrypted);
+}
+
+// 取消生物辨識 (從手機選單觸發)
+window.disableBiometric = async () => {
+    if (!firebaseAvailable || !auth.currentUser) return;
+    if (!window.showConfirm("確定要停用生物辨識登入？")) return;
+    try {
+        // 列出所有 credential 並刪除
+        const credQuery = query(collection(db, 'artifacts', appId, 'public', 'data', 'user_credentials'), where('uid', '==', auth.currentUser.uid));
+        const creds = await getDocs(credQuery);
+        for (const d of creds.docs) await deleteDoc(d.ref);
+        window.showSuccess("已停用生物辨識");
+    } catch (err) {
+        window.showError("停用失敗：" + err.message);
+    }
+};
+
+// 用生物辨識登入 (手機版登入頁)
+window.loginWithBiometric = async () => {
+    if (!isMobileDevice()) { window.showError("生物辨識僅支援手機版"); return; }
+    if (!isWebAuthnSupported()) { window.showError("此瀏覽器不支援生物辨識"); return; }
+    if (!await isPlatformAuthAvailable()) { window.showError("此裝置未啟用生物辨識"); return; }
+
+    try {
+        // 1. 觸發 WebAuthn 認證
+        const challenge = crypto.getRandomValues(new Uint8Array(32));
+        const assertion = await navigator.credentials.get({
+            publicKey: {
+                challenge,
+                userVerification: "required",
+                timeout: 60000
+            }
+        });
+
+        const credId = bufferToBase64(assertion.rawId);
+
+        // 2. 從 Firestore 查詢對應的 credential
+        const credDoc = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'user_credentials', credId));
+        if (!credDoc.exists()) {
+            window.showError("查無此裝置的生物辨識資料，請用帳密登入");
+            return;
+        }
+        const credData = credDoc.data();
+
+        // 3. 解密密碼
+        const password = await decryptPassword(credData.encryptedPassword, credId);
+
+        // 4. 直接登入 (用 email + 解密後的密碼)
+        const { signInWithEmailAndPassword: signInWithCred } = await import("https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js");
+        await signInWithCred(auth, credData.email, password);
+
+        window.showSuccess(`✓ 生物辨識登入成功！歡迎 ${credData.accountId}`);
+        // onAuthStateChanged 會自動處理 UI 更新
+    } catch (err) {
+        console.error("Biometric login error:", err);
+        if (err.name === 'NotAllowedError') {
+            window.showError("已取消生物辨識");
+        } else if (err.code === 'auth/wrong-password') {
+            window.showError("密碼錯誤，請用帳密登入");
+        } else {
+            window.showError("生物辨識失敗：" + err.message);
+        }
+    }
+};
+
+// 在登入頁自動檢查並顯示「用生物辨識登入」按鈕
+const checkBiometricAvailable = async () => {
+    if (!isMobileDevice() || !isWebAuthnSupported()) return false;
+    return await isPlatformAuthAvailable();
+};
+
+// === 忘記密碼流程 ===
+window.showForgotPassword = () => {
+    const email = prompt("請輸入您註冊時綁定的 Email：", "");
+    if (!email) return;
+    if (!firebaseAvailable) { window.showError("Firebase 未連線"); return; }
+    sendPasswordResetEmail(auth, email, { url: window.location.origin + window.location.pathname })
+        .then(() => {
+            window.showSuccess(`重設密碼信已寄到 ${email}\n\n請到信箱點擊連結，連結會帶您回到本系統設定新密碼。`);
+        })
+        .catch((err) => {
+            console.error("sendPasswordResetEmail error:", err);
+            if (err.code === 'auth/user-not-found') {
+                window.showError("此 Email 沒有註冊帳號");
+            } else if (err.code === 'auth/invalid-email') {
+                window.showError("Email 格式不正確");
+            } else {
+                window.showError("寄送失敗：" + err.message);
+            }
+        });
+};
+
+// === 重設密碼頁面（從 Email 連結進來） ===
+// URL 格式: ?mode=resetPassword&oobCode=XXXX
+const handleResetPasswordUrl = () => {
+    const params = new URLSearchParams(window.location.search);
+    const mode = params.get('mode');
+    const oobCode = params.get('oobCode');
+    if (mode === 'resetPassword' && oobCode) {
+        if (!firebaseAvailable) return;
+        // 驗證 code 是否有效
+        verifyPasswordResetCode(auth, oobCode)
+            .then((email) => {
+                const newPass = prompt(`重設密碼\n\n帳號 Email: ${email}\n\n請輸入新密碼（至少 6 個字元）：`, "");
+                if (!newPass || newPass.length < 6) {
+                    window.showError("密碼至少 6 個字元");
+                    return;
+                }
+                confirmPasswordReset(auth, oobCode, newPass)
+                    .then(() => {
+                        window.showSuccess("密碼重設成功！請用新密碼登入。");
+                        // 清掉 URL 參數，回首頁
+                        window.history.replaceState({}, document.title, window.location.pathname);
+                    })
+                    .catch((err) => window.showError("重設失敗：" + err.message));
+            })
+            .catch((err) => {
+                window.showError("重設連結無效或已過期，請重新申請。\n\n錯誤：" + err.message);
+            });
+    }
+};
+// 在 app 載入後執行
+if (typeof window !== 'undefined') {
+    setTimeout(handleResetPasswordUrl, 1000);
+}
 window.handleAuth = async (e) => {
     e.preventDefault();
     if (!firebaseAvailable) { window.showError("Firebase 未設定，將無法儲存資料。"); return; }
@@ -1547,17 +2100,38 @@ window.resetRepaymentSelection = () => updateState({ selectedRepaymentId: '', re
 window.submitRepayment = async () => {
     const record = state.records.find(r => r.id === state.selectedRepaymentId);
     if (!record) return;
-    const newEntry = `${state.repaymentDate} 本金:${Math.max(0, Number(state.repaymentPrincipal))} 利息:${Math.max(0, Number(state.repaymentInterest))}`;
+    // ★ 欠款=0 多繳自動歸利息 (用戶要求 A 方案：歸利息，不變還款期數)
+    const calc = calculateDerivedData(record);
+    let actualPrincipal = Math.max(0, Number(state.repaymentPrincipal));
+    let actualInterest = Math.max(0, Number(state.repaymentInterest));
+    let isAutoShifted = false;
+    if (calc.arrears <= 0 && actualPrincipal > 0) {
+        // 本金已結清，多繳部分自動歸入利息
+        actualInterest = actualInterest + actualPrincipal;
+        actualPrincipal = 0;
+        isAutoShifted = true;
+    }
+    const newEntry = `${state.repaymentDate} 本金:${actualPrincipal} 利息:${actualInterest}`;
     const currentSchedule = record.schedule || '';
     const newSchedule = (currentSchedule ? currentSchedule + '\n' : '') + newEntry;
     const sortedSchedule = sortScheduleLines(newSchedule.split('\n').filter(x=>x.trim())).join('\n');
-    const data = { schedule: sortedSchedule, lastRepaymentDate: state.repaymentDate, updatedAt: serverTimestamp() };
+    const data = {
+        schedule: sortedSchedule,
+        lastRepaymentDate: state.repaymentDate,
+        currentPrincipal: actualPrincipal,
+        currentInterest: actualInterest,
+        updatedAt: serverTimestamp()
+    };
     if (state.isDemoMode) {
         const idx = state.records.findIndex(r => r.id === record.id);
         if (idx !== -1) state.records[idx] = { ...state.records[idx], ...data };
         renderApp();
     } else if (firebaseAvailable) await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'loan_records', record.id), data);
-    window.showSuccess("入帳成功！財務指標已更新。");
+    if (isAutoShifted) {
+        window.showSuccess(`入帳成功！本金已結清，$${state.repaymentPrincipal} 自動歸入利息。還款期數不變。`);
+    } else {
+        window.showSuccess("入帳成功！財務指標已更新。");
+    }
     window.resetRepaymentSelection();
 };
 window.openModal = (type, id) => {
@@ -1729,7 +2303,7 @@ const parseCSV = (text) => {
             else status='1';
         }
         let principalPerTerm = 0, interestPerTerm = 0, negotiationPrincipal = 0;
-        if (status === '5') negotiationPrincipal = Math.round(loanAmount * 0.05);
+        if (status === '5') negotiationPrincipal = 0; // ★ Bug 8 fix: 不再硬寫 loanAmount * 0.05，協商本金應由 user 手填或從歷史取得
         else if (status !== '2' && terms > 0) principalPerTerm = Math.round(loanAmount / terms);
         if (status !== '5') interestPerTerm = Math.round(loanAmount * interestRateFloat);
         const scheduleLines = [];
@@ -1754,15 +2328,10 @@ const parseCSV = (text) => {
                 });
             }
         }
+        // ★ Bug 7 fix: 不再用 HISTORY_START fallback 自動從 CSV 抓「日期欄位」（會誤抓非還款日期）
+        // 只信任 scheduleRowIndex 找到的「還款日程」row；沒有的話 schedule 留空
         if (scheduleLines.length === 0) {
-            for (let rowIdx = MAP_ROWS.HISTORY_START; rowIdx < rows.length; rowIdx++) {
-                const historyDateStr = rows[rowIdx]?.[col]?.trim();
-                if (historyDateStr && /\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(historyDateStr)) {
-                    const cleanDate = historyDateStr.replace(/\//g, '-');
-                    const entry = `${cleanDate} 本金:${status==='5'?negotiationPrincipal:principalPerTerm} 利息:${interestPerTerm}`;
-                    scheduleLines.push(entry);
-                }
-            }
+            console.log(`[parseCSV] 案件 #${col+1} (${borrowerName}) 沒有還款日程資料，schedule 留空`);
         }
         const sortedSchedule = sortScheduleLines(scheduleLines).join('\n');
         const repaidTermsCount = extractDatesFromSchedule(sortedSchedule).length;
@@ -1877,9 +2446,9 @@ const generateMobileCardsHtml = () => {
         else termAmount = (Number(r.principalPerTerm)||0)+(Number(r.interestPerTerm)||0);
         if (state.batchDeleteMode) {
             const isSelected = state.selectedCasesForBatch.includes(r.id);
-            return `<div class="mobile-case-card mobile-batch-select-card"><div class="mobile-batch-select"><input type="checkbox" ${isSelected ? 'checked' : ''} onclick="window.toggleSelectCaseForBatch('${r.id}')" class="w-5 h-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"></div><div class="mobile-case-header"><div><div class="flex items-center"><button onclick="window.openCasePreview('${r.id}', event)" class="mobile-case-id bg-transparent border-0 p-0 cursor-pointer hover:underline" title="點擊預覽案件詳情">${r.displayId||r.caseNumber||''}</button><span class="mobile-status-badge ${statusLbl.color}">${statusLbl.text}</span></div><button onclick="window.openCasePreview('${r.id}', event)" class="mobile-borrower-name ${borrowerColorClass} bg-transparent border-0 p-0 text-left cursor-pointer hover:underline" title="點擊預覽案件詳情">${r.borrower||''}</button><div class="mobile-payment-status ${paymentStatusClass}"><i data-lucide="${paymentStatusIcon}" class="w-3 h-3 mr-1"></i>${paymentStatusText}${lastPayHtml}</div></div></div><div class="mobile-case-details"><div class="mobile-detail-item"><span class="mobile-detail-label">借款金額</span><span class="mobile-detail-value">$${formatNumber(r.loanAmount||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">放款金額</span><span class="mobile-detail-value">${r.status==='2'?'$0':'$'+formatNumber(r.disbursed||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">欠款</span><span class="mobile-detail-value text-red-600 font-bold">$${formatNumber(calc.arrears||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">在外本金</span><span class="mobile-detail-value">$${formatNumber(calc.outstanding||0)}</span></div>${r.status==='5'?`<div class="mobile-detail-item"><span class="mobile-detail-label text-purple-600">協商本金</span><span class="mobile-detail-value text-purple-600 font-bold">$${formatNumber(r.negotiationPrincipal||0)}</span></div>`:''}</div></div>`;
+            return `<div class="mobile-case-card mobile-batch-select-card"><div class="mobile-batch-select"><input type="checkbox" ${isSelected ? 'checked' : ''} onclick="window.toggleSelectCaseForBatch('${r.id}')" class="w-5 h-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"></div><div class="mobile-case-header"><div><div class="flex items-center"><button onclick="window.openCasePreview('${r.id}', event)" class="mobile-case-id bg-transparent border-0 p-0 cursor-pointer hover:underline" title="點擊預覽案件詳情">${r.displayId||r.caseNumber||''}</button><span class="mobile-status-badge ${statusLbl.color}">${statusLbl.text}</span></div><button onclick="window.openCasePreview('${r.id}', event)" class="mobile-borrower-name ${borrowerColorClass} bg-transparent border-0 p-0 text-left cursor-pointer hover:underline" title="點擊預覽案件詳情">${r.borrower||''}</button><div class="mobile-payment-status ${paymentStatusClass}"><i data-lucide="${paymentStatusIcon}" class="w-3 h-3 mr-1"></i>${paymentStatusText}${lastPayHtml}</div></div></div><div class="mobile-case-details"><div class="mobile-detail-item"><span class="mobile-detail-label">借款金額</span><span class="mobile-detail-value">$${formatNumber(r.loanAmount||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">還款期數(次)</span><span class="mobile-detail-value text-blue-600 font-bold cursor-pointer" onclick="window.openModal('schedule', '${r.id}')" title="點擊查看還款日程">${parseSchedule(r.schedule).length} / ${r.terms || '-'}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">放款金額</span><span class="mobile-detail-value">${r.status==='2'?'$0':'$'+formatNumber(r.disbursed||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">欠款</span><span class="mobile-detail-value text-red-600 font-bold">$${formatNumber(calc.arrears||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">在外本金</span><span class="mobile-detail-value">$${formatNumber(calc.outstanding||0)}</span></div>${r.status==='5'?`<div class="mobile-detail-item"><span class="mobile-detail-label text-purple-600">協商本金</span><span class="mobile-detail-value text-purple-600 font-bold">$${formatNumber(r.negotiationPrincipal||0)}</span></div>`:''}</div></div>`;
         }
-        return `<div class="mobile-case-card"><div class="mobile-case-header"><div><div class="flex items-center"><button onclick="window.openCasePreview('${r.id}', event)" class="mobile-case-id bg-transparent border-0 p-0 cursor-pointer hover:underline" title="點擊預覽案件詳情">${r.displayId||r.caseNumber||''}</button><span class="mobile-status-badge ${statusLbl.color}">${statusLbl.text}</span></div><button onclick="window.openCasePreview('${r.id}', event)" class="mobile-borrower-name ${borrowerColorClass} bg-transparent border-0 p-0 text-left cursor-pointer hover:underline" title="點擊預覽案件詳情">${r.borrower||''}</button><div class="mobile-payment-status ${paymentStatusClass}"><i data-lucide="${paymentStatusIcon}" class="w-3 h-3 mr-1"></i>${paymentStatusText}${lastPayHtml}</div></div></div><div class="mobile-case-details"><div class="mobile-detail-item"><span class="mobile-detail-label">放款日期</span><span class="mobile-detail-value">${r.date||''}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">借款金額</span><span class="mobile-detail-value">$${formatNumber(r.loanAmount||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">欠款</span><span class="mobile-detail-value text-red-600 font-bold">$${formatNumber(calc.arrears||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">在外本金</span><span class="mobile-detail-value">$${formatNumber(calc.outstanding||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">${r.status==='5'?'協商每期':'每期應繳'}</span><span class="mobile-detail-value ${r.status==='5'?'text-purple-600 font-bold':''}">$${formatNumber(termAmount)}</span></div>${r.status==='5'?`<div class="mobile-detail-item"><span class="mobile-detail-label text-purple-600">協商本金</span><span class="mobile-detail-value text-purple-600 font-bold">$${formatNumber(r.negotiationPrincipal||0)}</span></div>`:`<div class="mobile-detail-item"><span class="mobile-detail-label">利率</span><span class="mobile-detail-value">${r.interestRate||0}%</span></div>`}</div><div class="mobile-case-actions"><button onclick="window.handlePaymentStatusClick('${r.id}')" class="mobile-action-button ${isPaid?'bg-emerald-100 text-emerald-600 hover:bg-emerald-200':'bg-red-100 text-red-600 hover:bg-red-200'}" title="還款入帳"><i data-lucide="banknote" class="w-4 h-4"></i></button><button onclick="window.startEdit('${r.id}')" class="mobile-action-button bg-blue-100 text-blue-600 hover:bg-blue-200" title="編輯"><i data-lucide="edit-2" class="w-4 h-4"></i></button><button onclick="window.handleDelete('${r.id}')" class="mobile-action-button bg-red-100 text-red-600 hover:bg-red-200" title="刪除"><i data-lucide="trash-2" class="w-4 h-4"></i></button>${((state.isAdmin||r.ownerUid===state.currentUserUid)&&!state.isDemoMode)?`<button onclick="window.forceDeleteCase('${r.id}')" class="mobile-action-button bg-red-200 text-red-800 hover:bg-red-300 border border-red-300" title="強制刪除（管理員）"><i data-lucide="zap" class="w-4 h-4"></i></button>`:''}</div></div>`;
+        return `<div class="mobile-case-card"><div class="mobile-case-header"><div><div class="flex items-center"><button onclick="window.openCasePreview('${r.id}', event)" class="mobile-case-id bg-transparent border-0 p-0 cursor-pointer hover:underline" title="點擊預覽案件詳情">${r.displayId||r.caseNumber||''}</button><span class="mobile-status-badge ${statusLbl.color}">${statusLbl.text}</span></div><button onclick="window.openCasePreview('${r.id}', event)" class="mobile-borrower-name ${borrowerColorClass} bg-transparent border-0 p-0 text-left cursor-pointer hover:underline" title="點擊預覽案件詳情">${r.borrower||''}</button><div class="mobile-payment-status ${paymentStatusClass}"><i data-lucide="${paymentStatusIcon}" class="w-3 h-3 mr-1"></i>${paymentStatusText}${lastPayHtml}</div></div></div><div class="mobile-case-details"><div class="mobile-detail-item"><span class="mobile-detail-label">放款日期</span><span class="mobile-detail-value">${r.date||''}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">借款金額</span><span class="mobile-detail-value">$${formatNumber(r.loanAmount||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">還款期數(次)</span><span class="mobile-detail-value text-blue-600 font-bold cursor-pointer" onclick="window.openModal('schedule', '${r.id}')" title="點擊查看還款日程">${parseSchedule(r.schedule).length} / ${r.terms || '-'}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">欠款</span><span class="mobile-detail-value text-red-600 font-bold">$${formatNumber(calc.arrears||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">在外本金</span><span class="mobile-detail-value">$${formatNumber(calc.outstanding||0)}</span></div><div class="mobile-detail-item"><span class="mobile-detail-label">${r.status==='5'?'協商每期':'每期應繳'}</span><span class="mobile-detail-value ${r.status==='5'?'text-purple-600 font-bold':''}">$${formatNumber(termAmount)}</span></div>${r.status==='5'?`<div class="mobile-detail-item"><span class="mobile-detail-label text-purple-600">協商本金</span><span class="mobile-detail-value text-purple-600 font-bold">$${formatNumber(r.negotiationPrincipal||0)}</span></div>`:`<div class="mobile-detail-item"><span class="mobile-detail-label">利率</span><span class="mobile-detail-value">${r.interestRate||0}%</span></div>`}</div><div class="mobile-case-actions"><button onclick="window.handlePaymentStatusClick('${r.id}')" class="mobile-action-button ${isPaid?'bg-emerald-100 text-emerald-600 hover:bg-emerald-200':'bg-red-100 text-red-600 hover:bg-red-200'}" title="還款入帳"><i data-lucide="banknote" class="w-4 h-4"></i></button><button onclick="window.startEdit('${r.id}')" class="mobile-action-button bg-blue-100 text-blue-600 hover:bg-blue-200" title="編輯"><i data-lucide="edit-2" class="w-4 h-4"></i></button><button onclick="window.handleDelete('${r.id}')" class="mobile-action-button bg-red-100 text-red-600 hover:bg-red-200" title="刪除"><i data-lucide="trash-2" class="w-4 h-4"></i></button>${((state.isAdmin||r.ownerUid===state.currentUserUid)&&!state.isDemoMode)?`<button onclick="window.forceDeleteCase('${r.id}')" class="mobile-action-button bg-red-200 text-red-800 hover:bg-red-300 border border-red-300" title="強制刪除（管理員）"><i data-lucide="zap" class="w-4 h-4"></i></button>`:''}</div></div>`;
     }).join('');
 };
 window.refreshListUI = () => {
@@ -2097,6 +2666,11 @@ const getBadDebtStartDate = (record) => {
         const d = new Date(String(val).replace(/\//g, '-'));
         return isNaN(d.getTime()) ? null : d;
     };
+    // ★ Bug 6 fix: 優先用 badDebtStartMonth（手動設定，YYYY-MM 格式）
+    if (record.badDebtStartMonth && /^\d{4}-\d{2}$/.test(record.badDebtStartMonth)) {
+        const [y, m] = record.badDebtStartMonth.split('-').map(Number);
+        return new Date(y, m - 1, 1);
+    }
     // 用 schedule 找最後一次「本金>0 且 利息>0」的日期
     const scheduleStr = String(record.schedule || '');
     if (scheduleStr.trim()) {
@@ -2436,7 +3010,7 @@ const drawBadDebtTrendChart = () => {
 };
 
 function renderAuth() {
-    return `<div class="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 flex items-center justify-center p-4 font-sans"><div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-fade-in p-8"><div class="text-center mb-8"><div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-blue-100 mb-4"><i data-lucide="wallet" class="w-8 h-8 text-blue-600"></i></div><h2 class="text-2xl font-bold text-gray-800">${state.isRegistering?"註冊新帳號":"登入財務系統"}</h2><p class="text-xs text-gray-500 mt-2">${state.isRegistering?"設定您的專屬帳號ID與綁定Email":"使用您的帳號ID登入"}</p></div><form onsubmit="window.handleAuth(event)" class="space-y-6"><div><label class="block text-sm font-medium text-gray-700 mb-1">帳號 (ID)</label><div class="relative"><span class="absolute left-3 top-3 text-gray-400"><i data-lucide="user" class="w-5 h-5"></i></span><input type="text" id="authUsername" class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="請輸入帳號" required></div></div>${state.isRegistering?`<div><label class="block text-sm font-medium text-gray-700 mb-1">綁定 Email</label><div class="relative"><span class="absolute left-3 top-3 text-gray-400"><i data-lucide="at-sign" class="w-5 h-5"></i></span><input type="email" id="authEmail" class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="name@example.com" required></div></div>`:''}<div><label class="block text-sm font-medium text-gray-700 mb-1">密碼</label><div class="relative"><span class="absolute left-3 top-3 text-gray-400"><i data-lucide="lock" class="w-5 h-5"></i></span><input type="password" id="authPassword" class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="????????" required></div></div>${state.isRegistering?`<div><label class="block text-sm font-medium text-gray-700 mb-1">確認密碼</label><div class="relative"><span class="absolute left-3 top-3 text-gray-400"><i data-lucide="lock" class="w-5 h-5"></i></span><input type="password" id="authConfirmPassword" class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="再次輸入密碼" required></div></div>`:''}<button type="submit" ${state.authLoading?'disabled':''} class="w-full text-white ${state.isRegistering?'bg-emerald-600 hover:bg-emerald-700':'bg-blue-600 hover:bg-blue-700'} py-3 rounded-lg font-bold transition-all shadow-md flex justify-center items-center disabled:opacity-50">${state.authLoading?'<i data-lucide="refresh-cw" class="w-5 h-5 mr-2 animate-spin"></i>':(state.isRegistering?'<i data-lucide="user-plus" class="w-5 h-5 mr-2"></i> 立即註冊':'<i data-lucide="log-in" class="w-5 h-5 mr-2"></i> 登入系統')}</button></form><div class="mt-6 text-center text-sm space-y-4"><div><span class="text-gray-500">${state.isRegistering?"已經有帳號了嗎？":"還沒有帳號嗎？"}</span><button onclick="window.toggleAuthMode()" class="ml-2 text-blue-600 hover:text-blue-800 font-bold hover:underline focus:outline-none">${state.isRegistering?"直接登入":"註冊新帳號"}</button></div><div class="pt-2 border-t border-gray-100"><button onclick="window.enterDemoMode()" class="text-gray-400 hover:text-gray-600 text-xs flex items-center justify-center w-full hover:underline"><i data-lucide="log-in" class="w-3 h-3 mr-1"></i> 先行試用 (免登入/不儲存資料)</button></div></div></div></div>`;
+    return `<div class="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 flex items-center justify-center p-4 font-sans"><div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-fade-in p-8"><div class="text-center mb-8"><div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-blue-100 mb-4"><i data-lucide="wallet" class="w-8 h-8 text-blue-600"></i></div><h2 class="text-2xl font-bold text-gray-800">${state.isRegistering?"註冊新帳號":"登入財務系統"}</h2><p class="text-xs text-gray-500 mt-2">${state.isRegistering?"設定您的專屬帳號ID與綁定Email":"使用您的帳號ID登入"}</p></div><form onsubmit="window.handleAuth(event)" class="space-y-6"><div><label class="block text-sm font-medium text-gray-700 mb-1">帳號 (ID)</label><div class="relative"><span class="absolute left-3 top-3 text-gray-400"><i data-lucide="user" class="w-5 h-5"></i></span><input type="text" id="authUsername" class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="請輸入帳號" required></div></div>${state.isRegistering?`<div><label class="block text-sm font-medium text-gray-700 mb-1">綁定 Email</label><div class="relative"><span class="absolute left-3 top-3 text-gray-400"><i data-lucide="at-sign" class="w-5 h-5"></i></span><input type="email" id="authEmail" class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="name@example.com" required></div></div>`:''}<div><label class="block text-sm font-medium text-gray-700 mb-1">密碼</label><div class="relative"><span class="absolute left-3 top-3 text-gray-400"><i data-lucide="lock" class="w-5 h-5"></i></span><input type="password" id="authPassword" class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="????????" required></div></div>${state.isRegistering?`<div><label class="block text-sm font-medium text-gray-700 mb-1">確認密碼</label><div class="relative"><span class="absolute left-3 top-3 text-gray-400"><i data-lucide="lock" class="w-5 h-5"></i></span><input type="password" id="authConfirmPassword" class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="再次輸入密碼" required></div></div>`:''}<button type="submit" ${state.authLoading?'disabled':''} class="w-full text-white ${state.isRegistering?'bg-emerald-600 hover:bg-emerald-700':'bg-blue-600 hover:bg-blue-700'} py-3 rounded-lg font-bold transition-all shadow-md flex justify-center items-center disabled:opacity-50">${state.authLoading?'<i data-lucide="refresh-cw" class="w-5 h-5 mr-2 animate-spin"></i>':(state.isRegistering?'<i data-lucide="user-plus" class="w-5 h-5 mr-2"></i> 立即註冊':'<i data-lucide="log-in" class="w-5 h-5 mr-2"></i> 登入系統')}</button>${!state.isRegistering?`<button type="button" id="biometricLoginBtn" onclick="window.loginWithBiometric()" class="hidden sm:hidden w-full bg-gradient-to-r from-emerald-500 to-teal-500 text-white py-3 rounded-lg font-bold transition-all shadow-md flex justify-center items-center mt-3 hover:from-emerald-600 hover:to-teal-600"><i data-lucide="fingerprint" class="w-5 h-5 mr-2"></i> 使用生物辨識登入 (Face ID / 指紋)</button>`:''}</form><div class="mt-6 text-center text-sm space-y-4"><div><span class="text-gray-500">${state.isRegistering?"已經有帳號了嗎？":"還沒有帳號嗎？"}</span><button onclick="window.toggleAuthMode()" class="ml-2 text-blue-600 hover:text-blue-800 font-bold hover:underline focus:outline-none">${state.isRegistering?"直接登入":"註冊新帳號"}</button></div>${!state.isRegistering?`<div><button onclick="window.showForgotPassword()" class="text-orange-600 hover:text-orange-800 font-medium hover:underline focus:outline-none"><i data-lucide="key" class="w-3 h-3 mr-1 inline"></i>忘記密碼？</button></div>`:''}<div class="pt-2 border-t border-gray-100"><button onclick="window.enterDemoMode()" class="text-gray-400 hover:text-gray-600 text-xs flex items-center justify-center w-full hover:underline"><i data-lucide="log-in" class="w-3 h-3 mr-1"></i> 先行試用 (免登入/不儲存資料)</button></div></div></div></div>`;
 }
 function renderDashboard(stats) {
     const getColor = (id, defaultType) => {
@@ -2616,7 +3190,7 @@ function renderForm() {
     // 已還款期數與最後繳款日
     const repaidCount = isEdit ? parseSchedule(state.editingRecord.schedule || '').length : 0;
     const lastPayDate = isEdit ? getLastRepaymentDateStr(state.editingRecord) : '';
-    return `<div class="max-w-5xl mx-auto bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden animate-fade-in flex flex-col h-[calc(100vh-6rem)]"><div class="bg-white border-b border-gray-200 p-4 flex justify-between items-center"><div class="flex items-center"><button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁"><i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i></button><div><h2 class="text-xl font-bold text-gray-800">${isEdit?'編輯案件':'新增案件'}</h2><p class="text-sm text-gray-500 mt-1">填寫或修改案件資訊</p></div></div><div class="flex items-center space-x-3">${state.history.length>0?`<button onclick="window.goBack()" class="flex items-center px-4 py-2 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg transition-colors font-medium shadow-sm"><i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁</button>`:''}${renderUserSwitcher()}</div></div><div class="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-sm flex-1 overflow-y-auto custom-scrollbar"><div class="lg:col-span-4 bg-gray-50 p-3 rounded-lg border border-gray-200"><h4 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 border-b border-gray-200 pb-1">基本與聯絡資料</h4><div class="grid grid-cols-2 md:grid-cols-4 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">借款人</label><input type="text" id="input_borrower" value="${formData.borrower}" oninput="window.updateFormData('borrower', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">身分證字號</label><input type="text" id="input_idNumber" value="${formData.idNumber}" oninput="window.updateFormData('idNumber', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">工作</label><input type="text" id="input_job" value="${formData.job}" oninput="window.updateFormData('job', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">經辦人</label><input type="text" id="input_agent" value="${formData.agent}" oninput="window.updateFormData('agent', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div class="md:col-span-2"><label class="block text-[10px] text-gray-500 mb-0.5">住址</label><input type="text" id="input_address" value="${formData.address}" oninput="window.updateFormData('address', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">電話</label><input type="text" id="input_telephone" value="${formData.telephone}" oninput="window.updateFormData('telephone', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">手機</label><input type="text" id="input_mobile" value="${formData.mobile}" oninput="window.updateFormData('mobile', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div></div></div><div class="lg:col-span-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3"><div class="lg:col-span-2 bg-blue-50 p-3 rounded-lg border border-blue-100"><h4 class="text-xs font-bold text-blue-800 uppercase tracking-wider mb-2 border-b border-blue-200 pb-1">貸款設定</h4><div class="grid grid-cols-2 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">狀態</label><select onchange="window.updateFormData('status', this.value, true)" class="w-full py-1 px-2 border rounded outline-none bg-white text-sm"><option value="1" ${formData.status=='1'?'selected':''}>1 - 進行中</option>${canUseStatus2?`<option value="2" ${formData.status=='2'?'selected':''}>2 - 代管案件</option>`:''}<option value="3" ${formData.status=='3'?'selected':''}>3 - 呆帳</option><option value="5" ${formData.status=='5'?'selected':''}>5 - 協商中</option><option value="0" ${formData.status=='0'?'selected':''}>0 - 已結案</option><option value="4" ${formData.status=='4'?'selected':''}>4 - 已結案呆帳</option></select></div><div><label class="block text-[10px] text-gray-500 mb-0.5">方式</label><select onchange="window.updateFormData('method', this.value, true)" class="w-full py-1 px-2 border rounded outline-none bg-white text-sm" ${formData.status==='5'?'disabled':''}><option value="叨簿子" ${formData.method=='叨簿子'?'selected':''}>叨簿子</option><option value="設定" ${formData.method=='設定'?'selected':''}>設定</option><option value="票貼" ${formData.method=='票貼'?'selected':''}>票貼</option><option value="小額" ${formData.method=='小額'?'selected':''}>小額</option></select></div><div><label class="block text-[10px] text-gray-500 mb-0.5">借款金額(債權) <span class="text-red-500">*</span></label><input type="number" id="input_loanAmount" value="${formData.loanAmount}" oninput="window.updateFormData('loanAmount', this.value); this.classList.remove('border-red-500','ring-2','ring-red-200','bg-red-50')" class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" placeholder="必填" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">放款金額(實際)</label><input type="number" id="input_disbursed" value="${formData.disbursed}" oninput="window.updateFormData('disbursed', this.value)" class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">放款日期</label><input type="date" id="input_date" value="${formData.date}" oninput="window.updateFormData('date', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm" /></div>${formData.status==='3'?`<div><label class="block text-[10px] text-red-600 mb-0.5 font-bold">強制執行狀態</label><select onchange="window.updateFormData('executionStatus', this.value)" class="w-full py-1 px-2 border border-red-300 rounded outline-none font-mono bg-red-50 text-sm"><option value="" ${!formData.executionStatus?'selected':''}>無</option><option value="in_progress" ${formData.executionStatus==='in_progress'?'selected':''}>進行中</option><option value="completed" ${formData.executionStatus==='completed'?'selected':''}>已結案 (排除圖表)</option></select><p class="text-[9px] text-red-500 mt-1">已完成強制執行的案件將不會出現在呆帳趨勢圖中</p></div>`:''}</div></div><div class="lg:col-span-2 bg-emerald-50 p-3 rounded-lg border border-emerald-100"><h4 class="text-xs font-bold text-emerald-800 uppercase tracking-wider mb-2 border-b border-emerald-200 pb-1">還款條件</h4><div class="grid grid-cols-3 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">期數</label><input type="number" id="input_terms" value="${formData.terms}" oninput="window.updateFormData('terms', this.value)" ${formData.status==='5'?'disabled':''} class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">利率(%)</label><input type="text" id="input_interestRate" value="${formData.interestRate}" oninput="window.updateFormData('interestRate', this.value)" ${formData.status==='5'?'disabled':''} class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">每期還款日</label><input type="text" id="input_repayDay" value="${formData.repayDay}" oninput="window.updateFormData('repayDay', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm" /></div>${formData.status==='2'?`<div class="col-span-3 border-t border-emerald-200 my-1"></div><div><label class="block text-[10px] text-blue-600 mb-0.5">借款利率 (%)</label><input type="text" id="input_specialRate" value="${formData.specialRate}" oninput="window.updateFormData('specialRate', this.value)" class="w-full py-1 px-2 border border-blue-300 rounded font-mono bg-white text-sm" placeholder="例如: 0.5"></div><div><label class="block text-[10px] text-blue-600 mb-0.5">應付 (給委託人)</label><input type="text" id="input_expectedPayment" value="${formatNumber(formData.expectedPayment||0)}" readonly class="w-full py-1 px-2 border border-blue-300 rounded font-mono bg-blue-50 text-blue-800 text-sm" /></div>`:''}${formData.status==='5'?`<div class="col-span-3 border-t border-purple-200 my-1 pt-2"><h4 class="text-xs font-bold text-purple-700 uppercase tracking-wider mb-1">協商還款設定</h4><div class="grid grid-cols-1 gap-3"><div><label class="block text-[10px] text-purple-600 mb-0.5 font-bold">協商本金 (每期還款)</label><input type="number" id="input_negotiationPrincipal" value="${formData.negotiationPrincipal}" oninput="window.updateFormData('negotiationPrincipal', this.value)" class="w-full py-1 px-2 border border-purple-300 rounded outline-none font-mono bg-purple-50 text-purple-800 text-sm" /><p class="text-[9px] text-purple-500 mt-1">協商案件每期固定還款本金，無利息</p></div></div></div>`:`<div class="col-span-3 grid grid-cols-2 gap-3 mt-1"><div><label class="block text-[10px] text-gray-500 mb-0.5 font-bold">每期本金 (合約)</label><input type="number" id="input_principalPerTerm" value="${formData.principalPerTerm}" oninput="window.updateFormData('principalPerTerm', this.value)" class="w-full py-1 px-2 border rounded outline-none font-mono bg-gray-100 text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5 font-bold">${formData.status==='2'?'管理費':'每期利息'} (合約)</label><input type="number" id="input_interestPerTerm" value="${formData.interestPerTerm}" oninput="window.updateFormData('interestPerTerm', this.value)" ${formData.status==='2'?'readonly':''} class="w-full py-1 px-2 border rounded outline-none font-mono ${formData.status==='2'?'bg-blue-50 text-blue-800':'bg-gray-100'} text-sm" /></div></div>`}${isEdit?`<div class="col-span-3 border-t border-orange-200 my-1 pt-1"><h4 class="text-[10px] font-bold text-orange-600 uppercase tracking-wider mb-1">本期調整 (當月實收)</h4><div class="grid grid-cols-2 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">本期本金</label><input type="number" id="input_currentPrincipal" value="${formData.currentPrincipal!==undefined?formData.currentPrincipal:(formData.status==='5'?formData.negotiationPrincipal:formData.principalPerTerm)}" oninput="window.updateFormData('currentPrincipal', this.value)" class="w-full py-1 px-2 border border-orange-300 rounded outline-none font-mono bg-orange-50 text-sm text-gray-700 font-bold" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">本期利息</label><input type="number" id="input_currentInterest" value="${formData.currentInterest!==undefined?formData.currentInterest:(formData.status==='5'?0:formData.interestPerTerm)}" oninput="window.updateFormData('currentInterest', this.value)" class="w-full py-1 px-2 border border-orange-300 rounded outline-none font-mono bg-orange-50 text-sm text-gray-700 font-bold" /></div></div></div>`:''}</div></div><div class="lg:col-span-4"><label class="block text-[10px] text-gray-500 mb-0.5">附註</label><textarea rows="2" id="input_note" oninput="window.updateFormData('note', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm resize-none">${formData.note}</textarea></div>${isEdit?`<div class="lg:col-span-4 bg-yellow-50 p-2 rounded border border-yellow-200 grid grid-cols-4 gap-2"><div><label class="block text-[10px] text-gray-500">欠款</label><span id="display_arrears" class="font-mono font-bold text-red-600">${formatNumber(calc.arrears)}</span></div><div><label class="block text-[10px] text-gray-500">在外本金</label><span id="display_outstanding" class="font-mono font-bold">${formatNumber(calc.outstanding)}</span></div>${formData.status==='5'?`<div><label class="block text-[10px] text-purple-500">協商本金</label><span id="display_negotiation" class="font-mono font-bold text-purple-600">${formatNumber(formData.negotiationPrincipal||0)}</span></div>`:''}<div><label class="block text-[10px] text-gray-500">已還款期數</label><span class="font-mono font-bold text-blue-600 clickable-repaid" onclick="window.openModal('schedule', '${state.editingRecord.id}')">${repaidCount} 期 <i data-lucide="calendar-days" class="w-3 h-3 inline ml-1"></i></span></div>${lastPayDate?`<div class="col-span-1"><label class="block text-[10px] text-gray-500">最後繳款日</label><span class="font-mono font-bold">${lastPayDate}</span></div>`:''}<div class="col-span-1 flex justify-end space-x-2"><button onclick="window.duplicateCase()" class="px-3 py-1 bg-blue-100 text-blue-600 rounded hover:bg-blue-200 text-xs font-bold flex items-center"><i data-lucide="copy" class="w-3 h-3 mr-1"></i>複製案件</button><button onclick="window.handleDelete('${state.editingRecord.id}')" class="px-3 py-1 bg-red-100 text-red-600 rounded hover:bg-red-200 text-xs font-bold flex items-center"><i data-lucide="trash-2" class="w-3 h-3 mr-1"></i>刪除案件</button></div></div>`:''}</div><div class="bg-white px-6 py-4 w-full flex justify-end items-center gap-6 border-t border-gray-100 shrink-0 mt-auto"><button onclick="window.setActiveTab('list')" class="text-gray-500 hover:text-gray-800 text-sm font-medium transition-colors">取消</button><button onclick="window.handleSaveForm()" class="px-6 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 shadow-sm flex items-center font-bold text-sm transition-transform active:scale-95"><i data-lucide="save" class="w-4 h-4 mr-2"></i>儲存資料</button></div></div>`;
+    return `<div class="max-w-5xl mx-auto bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden animate-fade-in flex flex-col h-[calc(100vh-6rem)]"><div class="bg-white border-b border-gray-200 p-4 flex justify-between items-center"><div class="flex items-center"><button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁"><i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i></button><div><h2 class="text-xl font-bold text-gray-800">${isEdit?'編輯案件':'新增案件'}</h2><p class="text-sm text-gray-500 mt-1">填寫或修改案件資訊</p></div></div><div class="flex items-center space-x-3">${state.history.length>0?`<button onclick="window.goBack()" class="flex items-center px-4 py-2 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg transition-colors font-medium shadow-sm"><i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁</button>`:''}${renderUserSwitcher()}</div></div><div class="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-sm flex-1 overflow-y-auto custom-scrollbar"><div class="lg:col-span-4 bg-gray-50 p-3 rounded-lg border border-gray-200"><h4 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 border-b border-gray-200 pb-1">基本與聯絡資料</h4><div class="grid grid-cols-2 md:grid-cols-4 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">借款人</label><input type="text" id="input_borrower" value="${formData.borrower}" oninput="window.updateFormData('borrower', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">身分證字號</label><input type="text" id="input_idNumber" value="${formData.idNumber}" oninput="window.updateFormData('idNumber', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">工作</label><input type="text" id="input_job" value="${formData.job}" oninput="window.updateFormData('job', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">經辦人</label><input type="text" id="input_agent" value="${formData.agent}" oninput="window.updateFormData('agent', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div class="md:col-span-2"><label class="block text-[10px] text-gray-500 mb-0.5">住址</label><input type="text" id="input_address" value="${formData.address}" oninput="window.updateFormData('address', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">電話</label><input type="text" id="input_telephone" value="${formData.telephone}" oninput="window.updateFormData('telephone', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">手機</label><input type="text" id="input_mobile" value="${formData.mobile}" oninput="window.updateFormData('mobile', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div></div></div><div class="lg:col-span-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3"><div class="lg:col-span-2 bg-blue-50 p-3 rounded-lg border border-blue-100"><h4 class="text-xs font-bold text-blue-800 uppercase tracking-wider mb-2 border-b border-blue-200 pb-1">貸款設定</h4><div class="grid grid-cols-2 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">狀態</label><select onchange="window.updateFormData('status', this.value, true)" class="w-full py-1 px-2 border rounded outline-none bg-white text-sm"><option value="1" ${formData.status=='1'?'selected':''}>1 - 進行中</option>${canUseStatus2?`<option value="2" ${formData.status=='2'?'selected':''}>2 - 代管案件</option>`:''}<option value="3" ${formData.status=='3'?'selected':''}>3 - 呆帳</option><option value="5" ${formData.status=='5'?'selected':''}>5 - 協商中</option><option value="0" ${formData.status=='0'?'selected':''}>0 - 已結案</option><option value="4" ${formData.status=='4'?'selected':''}>4 - 已結案呆帳</option></select></div><div><label class="block text-[10px] text-gray-500 mb-0.5">方式</label><select onchange="window.updateFormData('method', this.value, true)" class="w-full py-1 px-2 border rounded outline-none bg-white text-sm" ${formData.status==='5'?'disabled':''}><option value="叨簿子" ${formData.method=='叨簿子'?'selected':''}>叨簿子</option><option value="設定" ${formData.method=='設定'?'selected':''}>設定</option><option value="票貼" ${formData.method=='票貼'?'selected':''}>票貼</option><option value="小額" ${formData.method=='小額'?'selected':''}>小額</option></select></div><div><label class="block text-[10px] text-gray-500 mb-0.5">借款金額(債權) <span class="text-red-500">*</span></label><input type="number" id="input_loanAmount" value="${formData.loanAmount}" oninput="window.updateFormData('loanAmount', this.value); this.classList.remove('border-red-500','ring-2','ring-red-200','bg-red-50')" class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" placeholder="必填" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">放款金額(實際)</label><input type="number" id="input_disbursed" value="${formData.disbursed}" oninput="window.updateFormData('disbursed', this.value)" class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">放款日期</label><input type="date" id="input_date" value="${formData.date}" oninput="window.updateFormData('date', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm" /></div>${(formData.status==='3' || formData.status==='4' || formData.status==='5')?`<div><label class="block text-[10px] text-red-600 mb-0.5 font-bold">呆帳起始月</label><input type="month" id="input_badDebtStartMonth" value="${formData.badDebtStartMonth||''}" oninput="window.updateFormData('badDebtStartMonth', this.value)" class="w-full py-1 px-2 border border-red-300 rounded outline-none font-mono bg-red-50 text-sm" /><p class="text-[9px] text-red-500 mt-1">手動指定呆帳/協商起始月（留空則自動從還款記錄推算）</p></div>`:''}${formData.status==='5'?`<div><label class="block text-[10px] text-purple-600 mb-0.5 font-bold">協議生效月 (蔡依萱式)</label><input type="month" id="input_negotiationStartMonth" value="${formData.negotiationStartMonth||''}" oninput="window.updateFormData('negotiationStartMonth', this.value)" class="w-full py-1 px-2 border border-purple-300 rounded outline-none font-mono bg-purple-50 text-sm" /><p class="text-[9px] text-purple-500 mt-1">協議從這月才開始生效。之前月份用一般 P+I 計算，這月之後用協商本金。</p></div>`:''}${formData.status==='3'?`<div><label class="block text-[10px] text-red-600 mb-0.5 font-bold">強制執行狀態</label><select onchange="window.updateFormData('executionStatus', this.value)" class="w-full py-1 px-2 border border-red-300 rounded outline-none font-mono bg-red-50 text-sm"><option value="" ${!formData.executionStatus?'selected':''}>無</option><option value="in_progress" ${formData.executionStatus==='in_progress'?'selected':''}>進行中</option><option value="completed" ${formData.executionStatus==='completed'?'selected':''}>已結案 (排除圖表)</option></select><p class="text-[9px] text-red-500 mt-1">已完成強制執行的案件將不會出現在呆帳趨勢圖中</p></div>`:''}</div></div><div class="lg:col-span-2 bg-emerald-50 p-3 rounded-lg border border-emerald-100"><h4 class="text-xs font-bold text-emerald-800 uppercase tracking-wider mb-2 border-b border-emerald-200 pb-1">還款條件</h4><div class="grid grid-cols-3 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">期數</label><input type="number" id="input_terms" value="${formData.terms}" oninput="window.updateFormData('terms', this.value)" ${formData.status==='5'?'disabled':''} class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">利率(%)</label><input type="text" id="input_interestRate" value="${formData.interestRate}" oninput="window.updateFormData('interestRate', this.value)" ${formData.status==='5'?'disabled':''} class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">每期還款日</label><input type="text" id="input_repayDay" value="${formData.repayDay}" oninput="window.updateFormData('repayDay', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm" /></div>${formData.status==='2'?`<div class="col-span-3 border-t border-emerald-200 my-1"></div><div><label class="block text-[10px] text-blue-600 mb-0.5">借款利率 (%)</label><input type="text" id="input_specialRate" value="${formData.specialRate}" oninput="window.updateFormData('specialRate', this.value)" class="w-full py-1 px-2 border border-blue-300 rounded font-mono bg-white text-sm" placeholder="例如: 0.5"></div><div><label class="block text-[10px] text-blue-600 mb-0.5">應付 (給委託人)</label><input type="text" id="input_expectedPayment" value="${formatNumber(formData.expectedPayment||0)}" readonly class="w-full py-1 px-2 border border-blue-300 rounded font-mono bg-blue-50 text-blue-800 text-sm" /></div>`:''}${formData.status==='5'?`<div class="col-span-3 border-t border-purple-200 my-1 pt-2"><h4 class="text-xs font-bold text-purple-700 uppercase tracking-wider mb-1">協商還款設定</h4><div class="grid grid-cols-1 gap-3"><div><label class="block text-[10px] text-purple-600 mb-0.5 font-bold">協商本金 (每期還款)</label><input type="number" id="input_negotiationPrincipal" value="${formData.negotiationPrincipal}" oninput="window.updateFormData('negotiationPrincipal', this.value)" class="w-full py-1 px-2 border border-purple-300 rounded outline-none font-mono bg-purple-50 text-purple-800 text-sm" /><p class="text-[9px] text-purple-500 mt-1">協商案件每期固定還款本金，無利息</p></div></div></div>`:`<div class="col-span-3 grid grid-cols-2 gap-3 mt-1"><div><label class="block text-[10px] text-gray-500 mb-0.5 font-bold">每期本金 (合約)</label><input type="number" id="input_principalPerTerm" value="${formData.principalPerTerm}" oninput="window.updateFormData('principalPerTerm', this.value)" class="w-full py-1 px-2 border rounded outline-none font-mono bg-gray-100 text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5 font-bold">${formData.status==='2'?'管理費':'每期利息'} (合約)</label><input type="number" id="input_interestPerTerm" value="${formData.interestPerTerm}" oninput="window.updateFormData('interestPerTerm', this.value)" ${formData.status==='2'?'readonly':''} class="w-full py-1 px-2 border rounded outline-none font-mono ${formData.status==='2'?'bg-blue-50 text-blue-800':'bg-gray-100'} text-sm" /></div></div>`}${isEdit?`<div class="col-span-3 border-t border-orange-200 my-1 pt-1"><h4 class="text-[10px] font-bold text-orange-600 uppercase tracking-wider mb-1">本期調整 (當月實收)</h4><div class="grid grid-cols-2 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">本期本金</label><input type="number" id="input_currentPrincipal" value="${formData.currentPrincipal!==undefined?formData.currentPrincipal:(formData.status==='5'?formData.negotiationPrincipal:formData.principalPerTerm)}" oninput="window.updateFormData('currentPrincipal', this.value)" class="w-full py-1 px-2 border border-orange-300 rounded outline-none font-mono bg-orange-50 text-sm text-gray-700 font-bold" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">本期利息</label><input type="number" id="input_currentInterest" value="${formData.currentInterest!==undefined?formData.currentInterest:(formData.status==='5'?0:formData.interestPerTerm)}" oninput="window.updateFormData('currentInterest', this.value)" class="w-full py-1 px-2 border border-orange-300 rounded outline-none font-mono bg-orange-50 text-sm text-gray-700 font-bold" /></div></div></div>`:''}</div></div><div class="lg:col-span-4"><label class="block text-[10px] text-gray-500 mb-0.5">附註</label><textarea rows="2" id="input_note" oninput="window.updateFormData('note', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm resize-none">${formData.note}</textarea></div>${isEdit?`<div class="lg:col-span-4 bg-yellow-50 p-2 rounded border border-yellow-200 grid grid-cols-4 gap-2"><div><label class="block text-[10px] text-gray-500">欠款</label><span id="display_arrears" class="font-mono font-bold text-red-600">${formatNumber(calc.arrears)}</span></div><div><label class="block text-[10px] text-gray-500">在外本金</label><span id="display_outstanding" class="font-mono font-bold">${formatNumber(calc.outstanding)}</span></div>${formData.status==='5'?`<div><label class="block text-[10px] text-purple-500">協商本金</label><span id="display_negotiation" class="font-mono font-bold text-purple-600">${formatNumber(formData.negotiationPrincipal||0)}</span></div>`:''}<div><label class="block text-[10px] text-gray-500">已還款期數</label><span class="font-mono font-bold text-blue-600 clickable-repaid" onclick="window.openModal('schedule', '${state.editingRecord.id}')">${repaidCount} 期 <i data-lucide="calendar-days" class="w-3 h-3 inline ml-1"></i></span></div>${lastPayDate?`<div class="col-span-1"><label class="block text-[10px] text-gray-500">最後繳款日</label><span class="font-mono font-bold">${lastPayDate}</span></div>`:''}<div class="col-span-1 flex justify-end space-x-2"><button onclick="window.duplicateCase()" class="px-3 py-1 bg-blue-100 text-blue-600 rounded hover:bg-blue-200 text-xs font-bold flex items-center"><i data-lucide="copy" class="w-3 h-3 mr-1"></i>複製案件</button><button onclick="window.handleDelete('${state.editingRecord.id}')" class="px-3 py-1 bg-red-100 text-red-600 rounded hover:bg-red-200 text-xs font-bold flex items-center"><i data-lucide="trash-2" class="w-3 h-3 mr-1"></i>刪除案件</button></div></div>`:''}</div><div class="bg-white px-6 py-4 w-full flex justify-end items-center gap-6 border-t border-gray-100 shrink-0 mt-auto"><button onclick="window.setActiveTab('list')" class="text-gray-500 hover:text-gray-800 text-sm font-medium transition-colors">取消</button><button onclick="window.handleSaveForm()" class="px-6 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 shadow-sm flex items-center font-bold text-sm transition-transform active:scale-95"><i data-lucide="save" class="w-4 h-4 mr-2"></i>儲存資料</button></div></div>`;
 }
 function renderRepayment() {
     let repaymentCases = state.records.filter(r => {
@@ -2654,7 +3228,18 @@ function renderApp() {
             pendingListScrollTop = listEl.scrollTop || 0;
         }
     }
-    if (!state.currentUser && !state.isDemoMode) { app.innerHTML = renderAuth(); return; }
+    if (!state.currentUser && !state.isDemoMode) {
+        app.innerHTML = renderAuth();
+        // 自動偵測生物辨識可用性，顯示「用生物辨識登入」按鈕
+        setTimeout(async () => {
+            const btn = document.getElementById('biometricLoginBtn');
+            if (btn && await checkBiometricAvailable()) {
+                btn.classList.remove('hidden');
+                btn.classList.add('flex');
+            }
+        }, 100);
+        return;
+    }
     const stats = calculateStats();
     let content = '';
     if (state.activeTab === 'dashboard') content = renderDashboard(stats);
@@ -2682,18 +3267,99 @@ function renderApp() {
             let baseRecords = state.records;
             baseRecords = getVisibleRecords();
             if (state.modalType === 'outstanding') filteredRecs = baseRecords.filter(r => (r.status==='1'||r.status==='3'||r.status==='5') && calculateDerivedData(r).outstanding>0);
-            else if (state.modalType === 'currentLent') filteredRecs = baseRecords.filter(r => r.status==='1'||r.status==='3'||r.status==='5');
+            else if (state.modalType === 'currentLent') filteredRecs = baseRecords.filter(r => r.status==='1'||r.status==='3'||r.status==='5'); // Bug 12 fix: status=2 (代管) 不計入
             else if (state.modalType === 'creditAmount') filteredRecs = baseRecords.filter(r => r.status==='1'||r.status==='3'||r.status==='5');
-            else if (state.modalType === 'monthDue') filteredRecs = baseRecords.filter(r => r.status==='1'||r.status==='2'||r.status==='5');
+            else if (state.modalType === 'monthDue') {
+                const _now = new Date();
+                // ★ 對齊 card 邏輯：status=1/2/5 全列，status=0/3/4 本月有還款才列 (含 lastRepaymentDate fallback)
+                filteredRecs = baseRecords.filter(r => {
+                    if (r.status==='1' || r.status==='2' || r.status==='5') return true;
+                    if (r.status==='0' || r.status==='3' || r.status==='4') {
+                        const entries = parseSchedule(r.schedule || '');
+                        if (entries.some(e => e.date && e.date.getFullYear() === _now.getFullYear() && e.date.getMonth() === _now.getMonth())) return true;
+                        // ★ Fallback: lastRepaymentDate 在當月
+                        const lastDate = r.lastRepaymentDate ? new Date(r.lastRepaymentDate) : null;
+                        if (lastDate && !isNaN(lastDate.getTime()) && lastDate.getFullYear() === _now.getFullYear() && lastDate.getMonth() === _now.getMonth()) return true;
+                        return false;
+                    }
+                    return false;
+                });
+            }
             else if (state.modalType === 'totalManagementFee') filteredRecs = baseRecords.filter(r => r.status==='2');
             else if (state.modalType === 'totalIncome') filteredRecs = baseRecords.filter(r => calculateDerivedData(r).totalInterestPaid>0);
             else if (state.modalType === 'netIncome') filteredRecs = baseRecords.filter(r => calculateDerivedData(r).totalInterestPaid>0);
-            else if (state.modalType === 'monthCollected') filteredRecs = baseRecords.filter(r => { const {isPaid}=getPaymentStatus(r); return isPaid && (r.status==='1'||r.status==='2'||r.status==='5'); });
-            else if (state.modalType === 'monthDiff') filteredRecs = baseRecords.filter(r => { const {isPaid}=getPaymentStatus(r); return !isPaid && (r.status==='1'||r.status==='2'||r.status==='5'); });
-            else if (state.modalType === 'monthInterestDiff') filteredRecs = baseRecords.filter(r => { const {isPaid}=getPaymentStatus(r); return !isPaid && r.status==='1'; });
+            else if (state.modalType === 'monthCollected') {
+                const _now = new Date();
+                // ★ 用 還款期數 判斷：lastRepaymentDate 在當月 + schedule 內當月 entry
+                filteredRecs = baseRecords.filter(r => {
+                    const lastDate = r.lastRepaymentDate ? new Date(r.lastRepaymentDate) : null;
+                    const lastInMonth = lastDate && !isNaN(lastDate.getTime()) && lastDate.getFullYear() === _now.getFullYear() && lastDate.getMonth() === _now.getMonth();
+                    if (lastInMonth) return true;
+                    const entries = parseSchedule(r.schedule || '');
+                    if (entries.some(e => e.date && e.date.getFullYear() === _now.getFullYear() && e.date.getMonth() === _now.getMonth())) return true;
+                    return false;
+                });
+            }
+            else if (state.modalType === 'monthDiff') {
+                const _now = new Date();
+                filteredRecs = baseRecords.filter(r => {
+                    if (!(r.status==='1' || r.status==='2' || r.status==='5')) return false;
+                    const { isPaid } = getPaymentStatus(r);
+                    return !isPaid && isCurrentMonthDue(r, _now.getFullYear(), _now.getMonth());
+                });
+            }
+            else if (state.modalType === 'monthInterestDiff') {
+                const _now = new Date();
+                // ★ 對齊 card：只看 status=1 (代管/協商無利息)
+                // 列出本月尚未繳清的 status=1 案件
+                filteredRecs = baseRecords.filter(r => {
+                    if (r.status !== '1') return false;
+                    const { isPaid } = getPaymentStatus(r);
+                    return !isPaid;
+                });
+            }
             else if (state.modalType === 'badDebtAmount') filteredRecs = baseRecords.filter(r => r.status==='3'||r.status==='4'||r.status==='5');
-            else if (state.modalType === 'monthInterestDue') filteredRecs = baseRecords.filter(r => r.status==='1');
-            else if (state.modalType === 'monthInterestCollected') filteredRecs = baseRecords.filter(r => { const {isPaid}=getPaymentStatus(r); return isPaid && r.status==='1'; });
+            else if (state.modalType === 'monthInterestDue') {
+                const _now = new Date();
+                // ★ 對齊 card 邏輯：
+                //   - status=1 且 interestPerTerm > 0 → 全列
+                //   - status=5 且 interestPerTerm > 0 → 全列 (協商可能有利息)
+                //   - status=2 → 不列 (管理費不是利息)
+                //   - status=0/3/4 → 本月 schedule 有利息 entry 才列 (含 fallback)
+                filteredRecs = baseRecords.filter(r => {
+                    if (r.status === '1') return (Number(r.interestPerTerm) || 0) > 0;
+                    if (r.status === '5') return (Number(r.interestPerTerm) || 0) > 0;
+                    if (r.status === '0' || r.status === '3' || r.status === '4') {
+                        const entries = parseSchedule(r.schedule || '');
+                        if (entries.some(e => e.date && e.date.getFullYear() === _now.getFullYear() && e.date.getMonth() === _now.getMonth() && e.interest > 0)) return true;
+                        // ★ Fallback
+                        const lastDate = r.lastRepaymentDate ? new Date(r.lastRepaymentDate) : null;
+                        if (lastDate && !isNaN(lastDate.getTime()) && lastDate.getFullYear() === _now.getFullYear() && lastDate.getMonth() === _now.getMonth()) {
+                            if ((Number(r.interestPerTerm) || 0) > 0) return true;
+                        }
+                        return false;
+                    }
+                    return false;  // status=2 不算
+                });
+            }
+            else if (state.modalType === 'monthInterestCollected') {
+                const _now = new Date();
+                // ★ 對齊 card：lastRepaymentDate 在當月 + interestPerTerm > 0 (任何 status 含協商)
+                //   - schedule 內當月 entry 有利息也算
+                //   - status=0/3/4 fallback
+                filteredRecs = baseRecords.filter(r => {
+                    const lastDate = r.lastRepaymentDate ? new Date(r.lastRepaymentDate) : null;
+                    const lastInMonth = lastDate && !isNaN(lastDate.getTime()) && lastDate.getFullYear() === _now.getFullYear() && lastDate.getMonth() === _now.getMonth();
+                    if (lastInMonth && (Number(r.interestPerTerm)||0) > 0) return true;
+                    const entries = parseSchedule(r.schedule || '');
+                    if (entries.some(e => e.date && e.date.getFullYear() === _now.getFullYear() && e.date.getMonth() === _now.getMonth() && e.interest > 0)) return true;
+                    // status=0/3/4 fallback
+                    if (r.status === '0' || r.status === '3' || r.status === '4') {
+                        if (lastInMonth && (Number(r.interestPerTerm)||0) > 0) return true;
+                    }
+                    return false;
+                });
+            }
             else if (state.modalType === 'negotiationDue') filteredRecs = baseRecords.filter(r => r.status==='5');
             else if (state.modalType === 'negotiationCollected') filteredRecs = baseRecords.filter(r => { const {isPaid}=getPaymentStatus(r); return isPaid && r.status==='5'; });
             else filteredRecs = baseRecords.filter(r => r.status==='1'||r.status==='2'||r.status==='5');
@@ -2770,7 +3436,7 @@ function renderApp() {
             if (state.modalType === 'monthInterestDue' || state.modalType === 'monthDue' || state.modalType === 'monthDiff' || state.modalType === 'unpaid') customHeadersHTML += `<th class="p-2 text-center">本月繳款狀態</th>`;
             customHeadersHTML += `<th class="p-2 text-center">狀態</th>`;
             if (state.modalType !== 'unpaid' && state.modalType !== 'monthDiff' && state.modalType !== 'negotiationCollected' && state.modalType !== 'monthInterestCollected') customHeadersHTML += `<th class="p-2 text-center">操作</th>`;
-            customHeadersHTML += `再`;
+            customHeadersHTML += `</tr>`; // Bug fix: 原本寫成「再」是 typo，導致 modal table 結構壞掉
             customHeaders = customHeadersHTML;
             customRowBuilder = (r,calc,status) => {
                 if (state.modalType === 'negotiationDue') {
@@ -2796,8 +3462,28 @@ function renderApp() {
                     return `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId||r.caseNumber||''})</span><tr><td class="p-2 text-right font-mono">${formatNumber(p)}</td><td class="p-2 text-right font-mono">${formatNumber(i)}</td><td class="p-2 text-right font-mono font-bold text-red-600">${formatNumber(total)}</td><td class="p-2 text-center"><button onclick="window.handleRepaymentSelect('${r.id}'); window.updateState({modalType:null, activeTab:'repayment'});" class="text-blue-600 hover:underline text-xs">${paymentStatusHtml}</button></td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span>`;
                 }
                 let p=0,i=0;
-                if(r.status==='5') { p=Number(r.negotiationPrincipal)||0; i=0; }
+                const _nowForRow = new Date();
+                if(r.status==='5') { 
+                    p=Number(r.negotiationPrincipal)||0; 
+                    i=Number(r.interestPerTerm)||0;  // 協商可能有利息
+                }
                 else if(r.status==='2') { p=0; i=Number(r.interestPerTerm)||0; }
+                else if(r.status==='0' || r.status==='3' || r.status==='4') {
+                    // ★ 結案/呆帳：用 schedule 內當月 entry 的 P+I (interestPerTerm 可能為 0)
+                    const _entries = parseSchedule(r.schedule || '');
+                    const _monthEntries = _entries.filter(e => e.date && e.date.getFullYear() === _nowForRow.getFullYear() && e.date.getMonth() === _nowForRow.getMonth());
+                    p = _monthEntries.reduce((s,e) => s + e.principal, 0);
+                    i = _monthEntries.reduce((s,e) => s + e.interest, 0);
+                    // Fallback: schedule 沒記但 lastRepaymentDate 在當月 → 用合約的 interestPerTerm
+                    if (p === 0 && i === 0) {
+                        const _lastDate = r.lastRepaymentDate ? new Date(r.lastRepaymentDate) : null;
+                        const _lastInMonth = _lastDate && !isNaN(_lastDate.getTime()) &&
+                            _lastDate.getFullYear() === _nowForRow.getFullYear() && _lastDate.getMonth() === _nowForRow.getMonth();
+                        if (_lastInMonth) {
+                            i = Number(r.interestPerTerm) || 0;
+                        }
+                    }
+                }
                 else { p=Number(r.principalPerTerm)||0; i=Number(r.interestPerTerm)||0; }
                 const {isPaid,isOverdue}=getPaymentStatus(r);
                 let paymentStatusHtml='';
@@ -2859,7 +3545,7 @@ function renderApp() {
             chartId: 'trendChart'
         });
     }
-    app.innerHTML = `<div class="flex h-screen bg-slate-100 font-sans text-gray-800"><div class="w-20 sm:w-64 bg-slate-900 text-white flex flex-col justify-between fixed h-full z-20 transition-all duration-300"><div><div class="p-6 flex items-center justify-center sm:justify-start border-b border-slate-700"><i data-lucide="wallet" class="w-8 h-8 text-emerald-400 mr-0 sm:mr-3"></i><span class="hidden sm:block text-xl font-bold tracking-wider">財務管理</span></div><div class="px-6 py-4 flex items-center border-b border-slate-800 mb-2"><div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold mr-3 ${state.isDemoMode?'bg-amber-500':'bg-slate-700'}">${state.isDemoMode?'T':(state.currentUser?state.currentUser.substring(0,2).toUpperCase():'U')}</div><div class="hidden sm:block"><p class="text-xs text-slate-400">${state.isDemoMode?"試用模式":"已登入"}</p><p class="text-sm font-bold text-white truncate w-32">${state.isDemoMode?"訪客 (不儲存)":state.currentUser}</p></div></div><nav class="mt-4 px-4 space-y-2"><button onclick="window.setActiveTab('dashboard')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab==='dashboard'?'bg-emerald-600':'hover:bg-slate-800'}"><i data-lucide="layout-dashboard" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">營運報表</span></button><button onclick="window.setActiveTab('list')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab==='list'?'bg-emerald-600':'hover:bg-slate-800'}"><i data-lucide="database" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">案件列表</span></button><button onclick="window.setActiveTab('repayment')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab==='repayment'?'bg-emerald-600':'hover:bg-slate-800'}"><i data-lucide="banknote" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">還款輸入</span></button><button onclick="window.open('user_manual.html', '_blank')" class="w-full flex items-center p-3 rounded-lg transition-colors hover:bg-slate-800"><i data-lucide="book-open" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">使用手冊</span></button>${state.isAdmin&&!state.isDemoMode?`<button onclick="window.setActiveTab('admin')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab==='admin'?'bg-emerald-600':'hover:bg-slate-800'}"><i data-lucide="users" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">用戶管理</span></button>`:''}</nav></div><div class="p-4 border-t border-slate-700 space-y-2"><button onclick="window.handleLogout()" class="w-full flex items-center justify-center sm:justify-start p-3 rounded-lg text-slate-400 hover:bg-red-900/30 hover:text-red-400 transition-colors"><i data-lucide="log-out" class="w-5 h-5 mr-0 sm:mr-2"></i><span class="hidden sm:block font-medium">登出系統</span></button></div></div><div class="flex-1 ml-20 sm:ml-64 overflow-x-hidden">${content}</div>${modalHtml}</div>`;
+    app.innerHTML = `<div class="flex h-screen bg-slate-100 font-sans text-gray-800"><div class="w-20 sm:w-64 bg-slate-900 text-white flex flex-col justify-between fixed h-full z-20 transition-all duration-300"><div><div class="p-6 flex items-center justify-center sm:justify-start border-b border-slate-700"><i data-lucide="wallet" class="w-8 h-8 text-emerald-400 mr-0 sm:mr-3"></i><span class="hidden sm:block text-xl font-bold tracking-wider">財務管理</span></div><div class="px-6 py-4 border-b border-slate-800 mb-2"><div class="flex items-center"><div onclick="${state.isDemoMode?'':'window.openMobileUserMenu()'}" class="${state.isDemoMode?'cursor-default':'cursor-pointer'} w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold mr-3 ${state.isDemoMode?'bg-amber-500':'bg-slate-700'}">${state.isDemoMode?'T':(state.currentUser?state.currentUser.substring(0,2).toUpperCase():'U')}</div><div class="hidden sm:block"><p class="text-xs text-slate-400">${state.isDemoMode?"試用模式":"已登入"}</p><p class="text-sm font-bold text-white truncate w-32">${state.isDemoMode?"訪客 (不儲存)":state.currentUser}</p></div></div>${!state.isDemoMode?`<button onclick="window.showChangePassword()" class="hidden sm:flex items-center text-xs text-slate-300 hover:text-emerald-400 mt-2 transition-colors"><i data-lucide="key" class="w-3 h-3 mr-1"></i>更改密碼</button>`:''}</div><nav class="mt-4 px-4 space-y-2"><button onclick="window.setActiveTab('dashboard')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab==='dashboard'?'bg-emerald-600':'hover:bg-slate-800'}"><i data-lucide="layout-dashboard" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">營運報表</span></button><button onclick="window.setActiveTab('list')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab==='list'?'bg-emerald-600':'hover:bg-slate-800'}"><i data-lucide="database" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">案件列表</span></button><button onclick="window.setActiveTab('repayment')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab==='repayment'?'bg-emerald-600':'hover:bg-slate-800'}"><i data-lucide="banknote" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">還款輸入</span></button><button onclick="window.open('user_manual.html', '_blank')" class="w-full flex items-center p-3 rounded-lg transition-colors hover:bg-slate-800"><i data-lucide="book-open" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">使用手冊</span></button>${state.isAdmin&&!state.isDemoMode?`<button onclick="window.setActiveTab('admin')" class="w-full flex items-center p-3 rounded-lg transition-colors ${state.activeTab==='admin'?'bg-emerald-600':'hover:bg-slate-800'}"><i data-lucide="users" class="w-5 h-5 mr-3"></i><span class="hidden sm:block">用戶管理</span></button>`:''}</nav></div><div class="p-4 border-t border-slate-700 space-y-2"><button onclick="window.handleLogout()" class="w-full flex items-center justify-center sm:justify-start p-3 rounded-lg text-slate-400 hover:bg-red-900/30 hover:text-red-400 transition-colors"><i data-lucide="log-out" class="w-5 h-5 mr-0 sm:mr-2"></i><span class="hidden sm:block font-medium">登出系統</span></button></div></div><div class="flex-1 ml-20 sm:ml-64 overflow-x-hidden">${content}</div>${modalHtml}${window.mobileUserMenuHtml||''}</div>`;
     if (state.activeTab === 'list') {
         setTimeout(() => {
             window.refreshListUI();
