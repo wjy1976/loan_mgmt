@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>財務管理系統 (ver 2.029.0724-D) </title>
+    <title>財務管理系統 (ver 2.029.0724-D) - 彈卡預覽版</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Lucide Icons -->
@@ -1052,6 +1052,7 @@ const calculateStats = () => {
         totalIncome: 0, creditAmount: 0, outstanding: 0, monthCollected: 0, monthInterestCollected: 0, monthDue: 0, monthInterestDue: 0,
         borrowers: 0, badDebtAmount: 0, currentLent: 0, monthDiff: 0, monthInterestDiff: 0, totalManagementFee: 0,
         activeCases: 0, unpaidCount: 0, normalClosedCount: 0, closedBadDebtCount: 0, activeBadDebtCount: 0,
+        historicalBadDebtCount: 0, historicalBadDebtCases: [], historicalBadDebtAmount: 0,
         unpaidRecords: [], closedRecords: [], activeRecords: [], badDebtCases: [], managedCases: 0, managedRecords: [],
         negotiationCases: 0, negotiationRecords: [], negotiationDue: 0, negotiationCollected: 0, hasManagedCases: false,
         status1Income: 0, status2Income: 0, status3Income: 0, status4Income: 0, status5Income: 0,
@@ -1110,7 +1111,7 @@ const calculateStats = () => {
             s.managedCases++;
             s.managedRecords.push(r);
         } else if (r.status === '5') {
-            // ★ 蔡依萱式: 判斷協議是否已開始
+            // ★ 判斷協議是否已生效 (用 negotiationStartMonth)
             const isPreAgreement = r.negotiationStartMonth && /^\d{4}-\d{2}$/.test(r.negotiationStartMonth) && (() => {
                 const [y, m] = r.negotiationStartMonth.split('-').map(Number);
                 if (currentYear < y) return true;
@@ -1201,7 +1202,7 @@ const calculateStats = () => {
         }
         // ===== 協商專屬 =====
         if (r.status === '5') {
-            // ★ 蔡依萱-style: 判斷協議是否已開始
+            // ★ 判斷協議是否已生效 (用 negotiationStartMonth)
             // 若 negotiationStartMonth 有設 + 當月 < 開始月 → 還在協議前 → 用 status=1 邏輯
             const isPreAgreement = r.negotiationStartMonth && /^\d{4}-\d{2}$/.test(r.negotiationStartMonth) && (() => {
                 const [y, m] = r.negotiationStartMonth.split('-').map(Number);
@@ -1219,27 +1220,41 @@ const calculateStats = () => {
             const currentMonthPaid = currentMonthEntries.reduce((sum, e) => sum + e.principal + e.interest, 0);
             s.negotiationCollected += currentMonthPaid;
             s.badDebtAmount += calc.arrears;
-            s.activeBadDebtCount++;
             s.badDebtCases.push(r);
             s.negotiationCases++;
             s.negotiationRecords.push(r);
         }
-        // ===== 呆帳分類 =====
+        // ===== 呆帳分類 (用 calc.arrears > 0 判斷是否還有欠款) =====
         if (r.status === '3') {
             s.badDebtAmount += calc.arrears;
-            s.activeBadDebtCount++;
             s.badDebtCases.push(r);
+            if (calc.arrears > 0) s.activeBadDebtCount++;
         } else if (r.status === '4') {
             s.badDebtAmount += calc.arrears;
             s.closedBadDebtCount++;
             s.badDebtCases.push(r);
+            if (calc.arrears > 0) s.activeBadDebtCount++;
+        }
+        // ★★★ 歷史累計呆帳 (3, 4, 5 都算呆帳, 永久累計不會歸零) ★★★
+        // - status=3: 呆帳中
+        // - status=4: 已結案呆帳
+        // - status=5: 協商 (協商也算呆帳的一種)
+        // - badDebtStartMonth: 手動標記的呆帳起始月 (就算結案歸 0 也保留)
+        if (r.status === '3' || r.status === '4' || r.status === '5' ||
+            (r.badDebtStartMonth && /^\d{4}-\d{2}$/.test(r.badDebtStartMonth))) {
+            s.historicalBadDebtCount++;
+            s.historicalBadDebtCases.push(r);
+            // 累計金額：取當前欠款 (可能已部分收回, 反映真實呆帳損失)
+            s.historicalBadDebtAmount += calc.arrears;
         }
         // ===== 案件分類 (active / closed / unpaid) =====
+        // ★ 總案件數 (進行中) = 1+3+5 (排除已結案的 0 跟 4)
         if (r.status === '0') { s.normalClosedCount++; s.closedRecords.push(r); }
-        else if (r.status === '1') {
+        else if (r.status === '4') { s.closedBadDebtCount++; s.closedRecords.push(r); }
+        else if (r.status === '1' || r.status === '3' || r.status === '5') {
             s.activeCases++; s.activeRecords.push(r);
             const { isOverdue } = getPaymentStatus(r);
-            if (isOverdue) { s.unpaidCount++; s.unpaidRecords.push(r); }
+            if (isOverdue && r.status === '1') { s.unpaidCount++; s.unpaidRecords.push(r); }
         }
         if (r.borrower) uniqueBorrowers.add(r.borrower);
     });
@@ -2724,10 +2739,12 @@ const computeBadDebtTrend = () => {
     if (state.isDemoMode) targetRecords = state.records.filter(r => r.ownerUid === 'demo');
     else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) targetRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
     else if (!state.isAdmin && !state.isDemoMode) targetRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
-    // 取狀態 3 / 4 / 5 (用 String 轉換相容 number)
+    // 包含狀態 3/4/5 + 有 badDebtStartMonth 的案件 (即使已 status 0, 也算歷史呆帳)
     const badDebtCases = targetRecords.filter(r => {
         const s = String(r.status);
-        return s === '3' || s === '4' || s === '5';
+        if (s === '3' || s === '4' || s === '5') return true;
+        if (r.badDebtStartMonth && /^\d{4}-\d{2}$/.test(r.badDebtStartMonth)) return true;
+        return false;
     });
     // 計算每個案件的起始月份與衰減資訊 (不再過濾掉沒有日期的)
     const cases = badDebtCases.map(record => {
@@ -2796,10 +2813,8 @@ const computeBadDebtTrend = () => {
     const monthData = months.map(monthKey => {
         const [y, mo] = monthKey.split('-').map(Number);
         const monthEnd = new Date(y, mo, 0, 23, 59, 59);
-        let count = 0, amount = 0, newCount = 0, newAmount = 0;
-        cases.forEach(({ record, startDate, currentArrears, loanAmount, scheduleEntries, isStatus3, isStatus4, isStatus5, isExecuted }) => {
-            // ★ 強制執行已結案 → 排除
-            if (isExecuted) return;
+        let count = 0, amount = 0, newCount = 0, newAmount = 0, historicalCount = 0;
+        cases.forEach(({ record, startDate, currentArrears, loanAmount, scheduleEntries, isStatus3, isStatus4, isStatus5 }) => {
             let includeThisMonth = false;
             let startKey = null;
             if (startDate) {
@@ -2811,57 +2826,60 @@ const computeBadDebtTrend = () => {
             }
             if (!includeThisMonth) return;
             // 計算該月底的待追回金額
-            // ★ 用戶規則：狀態 3/4/5 全部用 schedule 反推 (看到還款軌跡)
-            //   - 狀態 3 (走法律/強制執行): loanAmount - 進入呆帳前已還本金
-            //   - 狀態 4 (已結案呆帳): record.arrears + 進入呆帳後已還本金
-            //   - 狀態 5 (協商中): loanAmount - 進入呆帳前已還本金
-            // ★ 當月 (lastMonth)：用 currentArrears 對齊 Dashboard (原始呆帳 - 全部已還 = 現在剩餘)
-            // 防呆：所有狀態都套用 fallback (initial < currentArrears → fallback)
-            let balance;
-            // ★ 統一公式 (3/4/5 適用)：
+            // ★ 用 schedule 反推 (適用任何 status, 只要有 startDate)
             //   進入呆帳時的金額 = currentArrears (現在剩餘) + paidAfterAll (進入呆帳後已還本金總和)
             //   該月底 balance = 進入呆帳時金額 - 該月底前已還本金 (看到還款軌跡下降)
-            // ★ 當月 (lastMonth)：直接用 currentArrears 對齊 Dashboard
+            //   沒 schedule → fallback 到 currentArrears
+            let balance;
             if (monthKey === lastMonth) {
                 balance = currentArrears;
-            } else if ((isStatus3 || isStatus4 || isStatus5) && startDate) {
+            } else if (startDate) {
                 let initial = currentArrears;
                 let paidAfter = 0;
                 if (scheduleEntries.length > 0) {
-                    // 從進入呆帳月到「現在 (lastMonth 底)」累計已還本金
-                    // (避免 schedule 含「未來還款」記錄導致反推偒大)
                     const paidAfterAll = scheduleEntries
                         .filter(e => e.date >= startDate && e.date <= lastMonthEnd)
                         .reduce((s, e) => s + (e.principal || 0), 0);
-                    initial = currentArrears + paidAfterAll;  // 進入呆帳時的金額
-                    // 從進入呆帳月到該月底 已還本金
+                    initial = currentArrears + paidAfterAll;
                     paidAfter = scheduleEntries
                         .filter(e => e.date >= startDate && e.date <= monthEnd)
                         .reduce((s, e) => s + (e.principal || 0), 0);
                 }
                 balance = Math.max(0, initial - paidAfter);
             } else {
-                // 沒起始月 (不可能) 或 沒 schedule：用 currentArrears
                 balance = currentArrears;
             }
-            count++;
-            amount += balance;
+            // ★ 累計件數 (lifetime high water mark, 不會歸零)
+            // ★ 累計件數 (lifetime high water mark, 不會歸零)
+            // 累計定義：曾經進入呆帳的案件 (status 3/4/5 OR badDebtStartMonth 已填)
+            // 與 dashboard 累計保持一致, 故不再排除 executionStatus='completed'
+            if (balance > 0) {
+                count++;
+                amount += balance;
+            }
+            // 累計件數: 該月底為止曾經是呆帳的案件總數 (不會歸零)
+            historicalCount++;
             if (startKey && monthKey === startKey) {
                 newCount++;
                 // 本期新增金額 = 進入呆帳時的金額 = 起始月 balance
                 newAmount += balance;
             }
         });
-        return { count, amount, newCount, newAmount };
+        return { count, amount, newCount, newAmount, historicalCount };
     });
-    // 年資料 = 該年最後一個月的值
     const yearSet = new Set(months.map(m => m.split('-')[0]));
     const years = Array.from(yearSet).sort();
     const yearData = years.map(y => {
-        const yearMonths = months.filter(m => m.startsWith(y));
-        const lastMonthOfYear = yearMonths[yearMonths.length - 1];
-        const lastIdx = months.indexOf(lastMonthOfYear);
-        return monthData[lastIdx];
+        const yearMonthsIdx = months.map((m, idx) => m.startsWith(y) ? idx : -1).filter(i => i >= 0);
+        const lastIdx = yearMonthsIdx[yearMonthsIdx.length - 1];
+        const yearMonthData = yearMonthsIdx.map(i => monthData[i]);
+        return {
+            count: monthData[lastIdx].count,
+            amount: monthData[lastIdx].amount,
+            historicalCount: monthData[lastIdx].historicalCount,
+            newCount: yearMonthData.reduce((s, d) => s + d.newCount, 0),
+            newAmount: yearMonthData.reduce((s, d) => s + d.newAmount, 0)
+        };
     });
     return { months, monthData, years, yearData };
 };
@@ -2870,19 +2888,29 @@ const getBadDebtDetailForPeriod = (period, isMonth) => {
     if (state.isDemoMode) targetRecords = state.records.filter(r => r.ownerUid === 'demo');
     else if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) targetRecords = state.records.filter(r => r.ownerUid === state.viewingUid);
     else if (!state.isAdmin && !state.isDemoMode) targetRecords = state.records.filter(r => r.ownerUid === state.currentUserUid);
-    // 狀態 3/4/5 全算
+    // 包含狀態 3/4/5 + 有 badDebtStartMonth 的案件
     const badDebtCases = targetRecords.filter(r => {
         const s = String(r.status);
-        return s === '3' || s === '4' || s === '5';
+        if (s === '3' || s === '4' || s === '5') return true;
+        if (r.badDebtStartMonth && /^\d{4}-\d{2}$/.test(r.badDebtStartMonth)) return true;
+        return false;
     });
     const now = new Date();
     const nowKey = isMonth
         ? `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
         : `${now.getFullYear()}`;
     const results = [];
+    // 計算查詢期的月底
+    let queryPeriodEnd;
+    if (isMonth) {
+        const [y, m] = period.split('-').map(Number);
+        queryPeriodEnd = new Date(y, m, 0, 23, 59, 59);
+    } else {
+        queryPeriodEnd = new Date(parseInt(period), 11, 31, 23, 59, 59);
+    }
+    const isQueryPeriodCurrent = (period === nowKey);
+
     badDebtCases.forEach(record => {
-        // ★ 強制執行已結案 → 排除
-        if (String(record.executionStatus || '') === 'completed') return;
         const startDate = getBadDebtStartDate(record);
         let calc;
         try { calc = calculateDerivedData(record); } catch (e) { calc = { arrears: 0 }; }
@@ -2892,27 +2920,49 @@ const getBadDebtDetailForPeriod = (period, isMonth) => {
             const startKey = isMonth
                 ? `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}`
                 : `${startDate.getFullYear()}`;
-            // 案件起始年/月 <= 查詢期，表示該查詢期有此案件 (累計型)
             if (startKey <= period) include = true;
         } else {
-            // 沒日期的案件：算在「現在」這個期
             if (period === nowKey) include = true;
         }
-        if (include) results.push({ record, currentArrears });
+        if (!include) return;
+        // ★ 用 schedule 反推歷史 balance (適用任何 status)
+        let displayArrears = currentArrears;
+        if (!isQueryPeriodCurrent && startDate) {
+            const scheduleEntries = parseSchedule(record.schedule || '').filter(e => e.date && (e.principal || 0) > 0).sort((a, b) => a.date - b.date);
+            if (scheduleEntries.length > 0) {
+                const paidAfterAll = scheduleEntries
+                    .filter(e => e.date >= startDate && e.date <= new Date(now.getFullYear(), now.getMonth() + 1, 0))
+                    .reduce((s, e) => s + (e.principal || 0), 0);
+                const initial = currentArrears + paidAfterAll;
+                const paidAfter = scheduleEntries
+                    .filter(e => e.date >= startDate && e.date <= queryPeriodEnd)
+                    .reduce((s, e) => s + (e.principal || 0), 0);
+                displayArrears = Math.max(0, initial - paidAfter);
+            }
+        }
+        // ★ 過濾掉該月已還清 ($0) 的案件 — 不要再出現在明細
+        if (displayArrears <= 0) return;
+        results.push({ record, currentArrears: displayArrears, startDate });
     });
-    // 欠款降冪排序
-    results.sort((a, b) => b.currentArrears - a.currentArrears);
+    // 按呆帳起始時間升冪排序
+    results.sort((a, b) => {
+        if (!a.startDate && !b.startDate) return 0;
+        if (!a.startDate) return 1;
+        if (!b.startDate) return -1;
+        return a.startDate - b.startDate;
+    });
     return results;
 };
 const showBadDebtDetailModal = (period, isMonth, totalAmount, totalCount) => {
     const details = getBadDebtDetailForPeriod(period, isMonth);
     if (details.length === 0) { window.showError(`此${isMonth?'月份':'年份'}無待追回紀錄`); return; }
     const periodLabel = isMonth ? period : `${period} 年`;
+    const startStr = (sd) => sd ? `${sd.getFullYear()}-${String(sd.getMonth()+1).padStart(2,'0')}` : '—';
     // 桌面版表格
-    const tableRows = details.map(({record, currentArrears})=>{ const displayId=record.displayId||record.caseNumber||''; const statusLbl=getStatusLabel(record.status); return `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-mono">${displayId}</td><td class="p-2 font-bold text-gray-800">${record.borrower||''}</td><td class="p-2 text-right font-mono font-bold text-rose-600">$${formatNumber(currentArrears)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${statusLbl.color}">${statusLbl.text}</span></td><td class="p-2 text-center"><button onclick="window.openCasePreview('${record.id}', event); setTimeout(()=>document.getElementById('badDebtDetailModal')?.remove(),100);" class="text-blue-600 hover:underline text-xs">查看</button></td></tr>`; }).join('');
+    const tableRows = details.map(({record, currentArrears, startDate})=>{ const displayId=record.displayId||record.caseNumber||''; const statusLbl=getStatusLabel(record.status); return `<tr class="hover:bg-pink-50 transition-colors"><td class="p-2 font-mono">${displayId}</td><td class="p-2 font-bold text-gray-800">${record.borrower||''}</td><td class="p-2 text-center font-mono text-pink-700 font-bold">${startStr(startDate)}</td><td class="p-2 text-right font-mono font-bold text-rose-600">$${formatNumber(currentArrears)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${statusLbl.color}">${statusLbl.text}</span></td><td class="p-2 text-center"><button onclick="window.openCasePreview('${record.id}', event); setTimeout(()=>document.getElementById('badDebtDetailModal')?.remove(),100);" class="text-blue-600 hover:underline text-xs">查看</button></td></tr>`; }).join('');
     // 手機版 card 列表
-    const cardItems = details.map(({record, currentArrears})=>{ const displayId=record.displayId||record.caseNumber||''; const statusLbl=getStatusLabel(record.status); return `<div class="border border-gray-200 rounded-lg p-3 mb-2 hover:bg-gray-50 transition-colors"><div class="flex justify-between items-start mb-2"><div class="flex-1 min-w-0"><div class="flex items-center space-x-2 mb-1"><span class="font-mono text-xs text-gray-500">${displayId}</span><span class="px-2 py-0.5 rounded text-xs ${statusLbl.color}">${statusLbl.text}</span></div><div class="font-bold text-gray-800 truncate">${record.borrower||''}</div></div><div class="text-right shrink-0 ml-2"><div class="text-xs text-gray-500">待追回</div><div class="font-mono font-bold text-rose-600">$${formatNumber(currentArrears)}</div></div></div><button onclick="window.openCasePreview('${record.id}', event); setTimeout(()=>document.getElementById('badDebtDetailModal')?.remove(),100);" class="w-full mt-1 py-1.5 text-sm text-blue-600 border border-blue-200 rounded hover:bg-blue-50 flex items-center justify-center"><i data-lucide="eye" class="w-3 h-3 mr-1"></i>查看詳情</button></div>`; }).join('');
-    const modalHtml = `<div id="badDebtDetailModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4 animate-fade-in backdrop-blur-sm"><div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[95vh] sm:max-h-[85vh] flex flex-col"><div class="p-3 sm:p-4 flex justify-between items-center text-white shrink-0 bg-gradient-to-r from-pink-600 to-rose-600 rounded-t-xl"><h3 class="font-bold flex items-center text-sm sm:text-base"><i data-lucide="trending-down" class="w-4 h-4 sm:w-5 sm:h-5 mr-2"></i>${periodLabel} 待追回明細<div class="ml-2 text-xs sm:text-sm font-normal opacity-90">(${totalCount} 件 / $${formatNumber(totalAmount)})</div></h3><button onclick="document.getElementById('badDebtDetailModal').remove()" class="hover:bg-white/20 p-1 rounded"><i data-lucide="x" class="w-5 h-5"></i></button></div><div class="p-2 sm:p-4 overflow-y-auto flex-1"><div class="detail-card-view">${cardItems}</div><table class="w-full text-left border-collapse detail-table-view"><thead class="bg-gray-50 text-gray-500 text-xs uppercase sticky top-0"><tr><th class="p-2">案件編號</th><th class="p-2">借款人</th><th class="p-2 text-right">待追回欠款</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr></thead><tbody class="divide-y divide-gray-100">${tableRows}</tbody></table></div><div class="p-3 sm:p-4 border-t border-gray-100 bg-gray-50 text-right shrink-0"><button onclick="document.getElementById('badDebtDetailModal').remove()" class="px-4 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 text-sm">關閉</button></div></div></div>`;
+    const cardItems = details.map(({record, currentArrears, startDate})=>{ const displayId=record.displayId||record.caseNumber||''; const statusLbl=getStatusLabel(record.status); return `<div class="border border-gray-200 rounded-lg p-3 mb-2 hover:bg-gray-50 transition-colors"><div class="flex justify-between items-start mb-2"><div class="flex-1 min-w-0"><div class="flex items-center space-x-2 mb-1"><span class="font-mono text-xs text-gray-500">${displayId}</span><span class="px-2 py-0.5 rounded text-xs ${statusLbl.color}">${statusLbl.text}</span><span class="font-mono text-xs text-pink-700 font-bold">${startStr(startDate)}</span></div><div class="font-bold text-gray-800 truncate">${record.borrower||''}</div></div><div class="text-right shrink-0 ml-2"><div class="text-xs text-gray-500">待追回</div><div class="font-mono font-bold text-rose-600">$${formatNumber(currentArrears)}</div></div></div><button onclick="window.openCasePreview('${record.id}', event); setTimeout(()=>document.getElementById('badDebtDetailModal')?.remove(),100);" class="w-full mt-1 py-1.5 text-sm text-blue-600 border border-blue-200 rounded hover:bg-blue-50 flex items-center justify-center"><i data-lucide="eye" class="w-3 h-3 mr-1"></i>查看詳情</button></div>`; }).join('');
+    const modalHtml = `<div id="badDebtDetailModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-2 sm:p-4 animate-fade-in backdrop-blur-sm"><div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[95vh] sm:max-h-[85vh] flex flex-col"><div class="p-3 sm:p-4 flex justify-between items-center text-white shrink-0 bg-gradient-to-r from-pink-600 to-rose-600 rounded-t-xl"><h3 class="font-bold flex items-center text-sm sm:text-base"><i data-lucide="trending-down" class="w-4 h-4 sm:w-5 sm:h-5 mr-2"></i>${periodLabel} 待追回明細<div class="ml-2 text-xs sm:text-sm font-normal opacity-90">(${totalCount} 件 / $${formatNumber(totalAmount)})</div></h3><button onclick="document.getElementById('badDebtDetailModal').remove()" class="hover:bg-white/20 p-1 rounded"><i data-lucide="x" class="w-5 h-5"></i></button></div><div class="p-2 sm:p-4 overflow-y-auto flex-1"><div class="detail-card-view">${cardItems}</div><table class="w-full text-left border-collapse detail-table-view"><thead class="bg-gray-50 text-gray-500 text-xs uppercase sticky top-0"><tr><th class="p-2">案件編號</th><th class="p-2">借款人</th><th class="p-2 text-center">呆帳起始</th><th class="p-2 text-right">待追回欠款</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th></tr></thead><tbody class="divide-y divide-gray-100">${tableRows}</tbody></table></div><div class="p-3 sm:p-4 border-t border-gray-100 bg-gray-50 text-right shrink-0"><button onclick="document.getElementById('badDebtDetailModal').remove()" class="px-4 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 text-sm">關閉</button></div></div></div>`;
     document.body.insertAdjacentHTML('beforeend', modalHtml);
     lucide.createIcons();
 };
@@ -2998,28 +3048,47 @@ const drawBadDebtTrendChart = () => {
     const dataArr = isMonthView ? monthData : yearData;
     // 累計值
     const cumAmountData = dataArr.map(d => d.amount);
+    // ★ 月視圖用 count (當前有欠款的案件數, 跟面板 當前 一致)
+    //   年視圖用 newCount (本年新增)
+    const currentCountData = isMonthView
+        ? dataArr.map(d => d.count)
+        : dataArr.map(d => d.newCount);
+    // ★ 找出每段「同值連續」的中央索引, 標籤只顯示在中央
+    const plateauLabelPositions = currentCountData.map((v, i, arr) => {
+        if (v <= 0) return false;
+        let runStart = i, runEnd = i;
+        while (runStart > 0 && arr[runStart-1] === v) runStart--;
+        while (runEnd < arr.length-1 && arr[runEnd+1] === v) runEnd++;
+        const center = Math.floor((runStart + runEnd) / 2);
+        return i === center;
+    });
+    const barColor = isMonthView ? '#0e7490' : '#d97706';  // 月: 青藍, 年: 琥珀
+    const labelColor = isMonthView ? '#0e7490' : '#d97706';
     const option = {
-        title: { text: isMonthView?'近12個月呆帳待追回金額':'歷年呆帳待追回金額', left:'center', top: 2, textStyle:{ fontSize:14, fontWeight:'normal' } },
+        title: { text: isMonthView?'近12個月呆帳趨勢':'歷年呆帳趨勢', left:'center', top: 2, textStyle:{ fontSize:14, fontWeight:'normal' } },
         tooltip: {
             trigger:'axis',
+            axisPointer: { type: 'shadow' },
             formatter: (params) => {
                 if (!params || params.length === 0) return '';
                 const period = params[0].axisValue;
                 const d = dataArr[params[0].dataIndex];
                 return `<div style="font-weight:bold;margin-bottom:4px;">${period}${isMonthView?'':' 年'}</div>
-                    <div style="color:#9ca3af;font-size:11px;margin-bottom:4px;">該月底仍待追回的呆帳餘額</div>
-                    <div style="color:#9ca3af;font-size:11px;margin-bottom:4px;">本期新增：<b>${d.newCount}</b> 件 / $${formatNumber(d.newAmount)}</div>
-                    <div style="color:#9ca3af;font-size:11px;margin-bottom:4px;">累計件數：<b>${d.count}</b> 件</div>
-                    <div style="color:#be123c;">● 呆帳待追回金額：<b>$${formatNumber(d.amount)}</b></div>`;
+                    <div style="color:#9ca3af;font-size:11px;margin-bottom:4px;">${isMonthView?'當月新增':'本年新增'}: <b>${d.newCount}</b> 件 / $${formatNumber(d.newAmount)}</div>
+                    <div style="color:${barColor};font-size:11px;margin-bottom:4px;">當前有欠款: <b>${d.count}</b> 件</div>
+                    <div style="color:#dc2626;">● 待追回金額: <b>$${formatNumber(d.amount)}</b></div>`;
             }
         },
-        legend: { data: ['呆帳待追回金額'], top: 28 },
-        // ★ 只剩一張子圖：金額 line (件數在 tooltip 顯示)
-        grid: { left: '8%', right: '8%', top: 60, bottom: '18%', containLabel: true },
+        legend: { data: [isMonthView?'當前件數 (柱)':'本年新增 (柱)', '待追回金額 (線)'], top: 28, textStyle:{ fontSize:12 } },
+        grid: { left: '8%', right: '12%', top: 60, bottom: '18%', containLabel: true },
         xAxis: { type:'category', data:xAxisData, axisLabel:{ rotate:45, interval:0, fontSize: 10 } },
-        yAxis: { type:'value', name:'金額 (NTD)', nameTextStyle:{ padding:[0,0,5,0] }, axisLabel:{ formatter:(v)=>`$${formatNumber(v)}`, color:'#9d174d', fontSize: 10 } },
+        yAxis: [
+            { type:'value', name:'件數', nameTextStyle:{ padding:[0,0,5,0] }, axisLabel:{ color:barColor, fontSize: 10 }, position: 'left', splitLine:{ lineStyle:{ color:'#e5e7eb' } } },
+            { type:'value', name:'金額 (NTD)', nameTextStyle:{ padding:[0,0,5,0] }, axisLabel:{ formatter:(v)=>`$${formatNumber(v)}`, color:'#dc2626', fontSize: 10 }, position: 'right', splitLine: { show: false } }
+        ],
         series: [
-            { name:'呆帳待追回金額', data:cumAmountData, type:'line', smooth:true, symbol:'circle', symbolSize:6, lineStyle:{ width:2.5, color:'#be123c' }, itemStyle:{ color:'#be123c' }, areaStyle:{ opacity:0.15, color:'#be123c' } }
+            { name: isMonthView?'當前件數 (柱)':'本年新增 (柱)', data:currentCountData, type:'bar', yAxisIndex: 0, itemStyle:{ color: barColor, borderRadius:[4,4,0,0] }, barMaxWidth: 30, label:{ show:true, position:'top', formatter:(p)=> plateauLabelPositions[p.dataIndex] && p.value>0 ? p.value : '', fontSize:11, fontWeight:'bold', color: labelColor } },
+            { name:'待追回金額 (線)', data:cumAmountData, type:'line', smooth:true, symbol:'circle', symbolSize:7, lineStyle:{ width:3, color:'#dc2626' }, itemStyle:{ color:'#dc2626' }, areaStyle:{ opacity:0.12, color:'#dc2626' }, yAxisIndex: 1 }
         ],
         dataZoom: [{ type:'slider', start:0, end:100, bottom:2, height: 18 }, { type:'inside', start:0, end:100 }],
         toolbox: { feature: { saveAsImage: { title:'儲存為圖片' } } }
@@ -3054,7 +3123,7 @@ function renderDashboard(stats) {
         const colSpan = c.width === 2 ? 'lg:col-span-2' : 'lg:col-span-1';
         return `<div class="${colorStyle.bg} ${colSpan} border ${colorStyle.border} rounded-xl p-3 shadow-sm relative overflow-hidden flex flex-col justify-between h-full draggable-card hover:shadow-md transition-transform hover:scale-[1.01]" draggable="true" ondragstart="window.handleDragStart(event, '${c.id}')" ondragover="window.handleDragOver(event)" ondrop="window.handleDrop(event, '${c.id}')" onclick="window.openModalList('${c.id}')"><div class="flex justify-between items-start z-10"><span class="text-base font-bold text-gray-700">${config.label}</span><div class="flex items-center space-x-1"><button onclick="window.changeCardColor(event, '${c.id}')" class="p-1 hover:bg-black/10 rounded" title="更換顏色"><i data-lucide="palette" class="w-3 h-3 opacity-50"></i></button><button onclick="window.resizeCard(event, '${c.id}')" class="p-1 hover:bg-black/10 rounded" title="調整大小"><i data-lucide="${c.width===1?'maximize-2':'minimize-2'}" class="w-3 h-3 opacity-50"></i></button><div class="p-1.5 rounded-lg ${colorStyle.iconBg}"><i data-lucide="${config.icon}" class="w-4 h-4 ${colorStyle.iconColor}"></i></div></div></div><div class="mt-1 z-10"><span class="text-2xl sm:text-3xl font-extrabold tracking-tight ${colorStyle.text}">${config.isCurrency?'<span class="text-lg mr-1">$</span>':''}${formatNumber(config.value)}${!config.isCurrency?'<span class="text-lg ml-1">件</span>':''}</span></div></div>`;
     }).join('');
-    return `<div class="animate-fade-in space-y-6"><div class="bg-white border-b border-gray-200 p-4 flex justify-between items-center"><div class="flex items-center"><button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁"><i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i></button><div><h2 class="text-xl font-bold text-gray-800">財務營運儀表板</h2><p class="text-sm text-gray-500 mt-1"></p></div></div><div class="flex items-center space-x-3">${state.history.length>0?`<button onclick="window.goBack()" class="flex items-center px-4 py-2 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg transition-colors font-medium shadow-sm"><i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁</button>`:''}${renderUserSwitcher()}</div></div><div class="grid grid-cols-1 lg:grid-cols-4 gap-3"><div class="lg:col-span-3 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">${cardsHtml}</div><div class="flex flex-col gap-3"><div class="bg-gradient-to-br from-teal-600 to-cyan-700 rounded-xl p-4 shadow-lg border border-transparent flex flex-col justify-center relative overflow-hidden flex-1 min-h-[300px]"><div class="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mr-10 -mt-10 blur-xl"></div><div class="absolute bottom-0 left-0 w-24 h-24 bg-black/10 rounded-full -ml-10 -mb-10 blur-xl"></div><div class="flex items-center mb-4 relative z-10 border-b border-white/20 pb-2"><i data-lucide="database" class="w-6 h-6 text-white mr-2"></i><h3 class="font-bold text-white text-xl tracking-wide">系統案件狀態</h3></div><div class="grid grid-cols-1 sm:grid-cols-2 gap-3 relative z-10 flex-1"><div onclick="window.openModalList('active')" class="bg-emerald-100 backdrop-blur-sm p-3 rounded-xl text-center cursor-pointer hover:bg-emerald-200 transition-all border border-emerald-300 group flex flex-col justify-center"><span class="block text-4xl font-extrabold text-emerald-800 mb-1 group-hover:scale-110 transition-transform">${formatNumber(stats.activeCases)}</span><span class="text-base text-emerald-700 font-bold uppercase tracking-wider">進行中</span></div><div onclick="window.openModalList('unpaid')" class="bg-red-200 p-3 rounded-xl text-center cursor-pointer hover:bg-red-300 transition-all shadow-md group flex flex-col justify-center"><span class="block text-4xl font-extrabold text-red-800 mb-1 group-hover:scale-110 transition-transform">${formatNumber(stats.unpaidCount)}</span><span class="text-lg text-red-700 font-bold uppercase tracking-wider flex items-center justify-center"><i data-lucide="alert-triangle" class="w-4 h-4 mr-1 animate-pulse"></i>本期逾期</span></div><div onclick="window.openModalList('closed')" class="bg-gray-200 p-3 rounded-xl text-center cursor-pointer hover:bg-gray-300 transition-all border border-gray-300 flex flex-col justify-center"><span class="block text-4xl font-bold text-gray-800 mb-1">${formatNumber(stats.normalClosedCount)}</span><span class="text-lg text-gray-600 font-bold uppercase tracking-wider">結案</span></div><div onclick="window.openModalList('badDebt')" class="bg-pink-300 p-3 rounded-xl text-center cursor-pointer hover:bg-pink-400 transition-all shadow-md group flex flex-col justify-center"><span class="block text-4xl font-extrabold text-pink-900 mb-1 group-hover:scale-110 transition-transform">${formatNumber(stats.activeBadDebtCount+stats.closedBadDebtCount)}</span><span class="text-lg text-pink-800 font-bold uppercase tracking-wider">呆帳</span></div>${stats.hasManagedCases?`<div onclick="window.openModalList('managed')" class="bg-blue-100 p-3 rounded-xl text-center cursor-pointer hover:bg-blue-200 transition-all border border-blue-300 flex flex-col justify-center"><span class="block text-4xl font-extrabold text-blue-800 mb-1">${formatNumber(stats.managedCases)}</span><span class="text-lg text-blue-700 font-bold uppercase tracking-wider">代管中</span></div>`:''}${stats.negotiationCases>0?`<div onclick="window.openModalList('negotiation')" class="bg-purple-100 p-3 rounded-xl text-center cursor-pointer hover:bg-purple-200 transition-all border border-purple-300 flex flex-col justify-center"><span class="block text-4xl font-extrabold text-purple-800 mb-1">${formatNumber(stats.negotiationCases)}</span><span class="text-lg text-purple-700 font-bold uppercase tracking-wider">協商中</span></div>`:''}</div></div><div class="grid grid-cols-2 gap-3"><div class="bg-white rounded-xl p-3 shadow-md border border-gray-200 text-center cursor-pointer hover:shadow-lg transition-all" onclick="window.openTrendModal()"><i data-lucide="trending-up" class="w-7 h-7 text-emerald-600 mx-auto mb-1"></i><h3 class="font-bold text-gray-800 text-sm">淨收入趨勢圖</h3><p class="text-[10px] text-gray-500 mt-1">歷年/近12月</p></div><div class="bg-white rounded-xl p-3 shadow-md border border-gray-200 text-center cursor-pointer hover:shadow-lg transition-all" onclick="window.openBadDebtTrendModal()"><i data-lucide="trending-down" class="w-7 h-7 text-pink-600 mx-auto mb-1"></i><h3 class="font-bold text-gray-800 text-sm">呆帳趨勢圖</h3><p class="text-[10px] text-gray-500 mt-1">歷年/近12月</p></div></div></div></div></div>`;
+    return `<div class="animate-fade-in space-y-6"><div class="bg-white border-b border-gray-200 p-4 flex justify-between items-center"><div class="flex items-center"><button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁"><i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i></button><div><h2 class="text-xl font-bold text-gray-800">財務營運儀表板</h2><p class="text-sm text-gray-500 mt-1"></p></div></div><div class="flex items-center space-x-3">${state.history.length>0?`<button onclick="window.goBack()" class="flex items-center px-4 py-2 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg transition-colors font-medium shadow-sm"><i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁</button>`:''}${renderUserSwitcher()}</div></div><div class="grid grid-cols-1 lg:grid-cols-4 gap-3"><div class="lg:col-span-3 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">${cardsHtml}</div><div class="flex flex-col gap-3"><div class="bg-gradient-to-br from-teal-600 to-cyan-700 rounded-xl p-4 shadow-lg border border-transparent flex flex-col justify-center relative overflow-hidden flex-1 min-h-[300px]"><div class="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mr-10 -mt-10 blur-xl"></div><div class="absolute bottom-0 left-0 w-24 h-24 bg-black/10 rounded-full -ml-10 -mb-10 blur-xl"></div><div class="flex items-center mb-4 relative z-10 border-b border-white/20 pb-2"><i data-lucide="database" class="w-6 h-6 text-white mr-2"></i><h3 class="font-bold text-white text-xl tracking-wide">系統案件狀態</h3></div><div class="grid grid-cols-1 sm:grid-cols-2 gap-3 relative z-10 flex-1"><div onclick="window.openModalList('active')" class="bg-emerald-100 backdrop-blur-sm p-3 rounded-xl text-center cursor-pointer hover:bg-emerald-200 transition-all border border-emerald-300 group flex flex-col justify-center"><span class="block text-4xl font-extrabold text-emerald-800 mb-1 group-hover:scale-110 transition-transform">${formatNumber(stats.activeCases)}</span><span class="text-base text-emerald-700 font-bold uppercase tracking-wider">總案件數</span></div><div onclick="window.openModalList('unpaid')" class="bg-red-200 p-3 rounded-xl text-center cursor-pointer hover:bg-red-300 transition-all shadow-md group flex flex-col justify-center"><span class="block text-4xl font-extrabold text-red-800 mb-1 group-hover:scale-110 transition-transform">${formatNumber(stats.unpaidCount)}</span><span class="text-lg text-red-700 font-bold uppercase tracking-wider flex items-center justify-center"><i data-lucide="alert-triangle" class="w-4 h-4 mr-1 animate-pulse"></i>本期逾期</span></div><div onclick="window.openModalList('closed')" class="bg-gray-200 p-3 rounded-xl text-center cursor-pointer hover:bg-gray-300 transition-all border border-gray-300 flex flex-col justify-center"><span class="block text-4xl font-bold text-gray-800 mb-1">${formatNumber(stats.normalClosedCount+stats.closedBadDebtCount)}</span><span class="text-lg text-gray-600 font-bold uppercase tracking-wider">結案</span></div><div onclick="window.openModalList('badDebt')" class="bg-pink-300 p-3 rounded-xl text-center cursor-pointer hover:bg-pink-400 transition-all shadow-md group flex flex-col justify-center"><span class="block text-4xl font-extrabold text-pink-900 mb-1 group-hover:scale-110 transition-transform">${formatNumber(stats.activeBadDebtCount)}</span><span class="text-lg text-pink-800 font-bold uppercase tracking-wider">當前呆帳${stats.historicalBadDebtCount>0?` <span class="text-[10px] block text-pink-700">歷史累計: ${formatNumber(stats.historicalBadDebtCount)} 件<br/>保留到還清才歸 0</span>`:''}</span></div>${stats.hasManagedCases?`<div onclick="window.openModalList('managed')" class="bg-blue-100 p-3 rounded-xl text-center cursor-pointer hover:bg-blue-200 transition-all border border-blue-300 flex flex-col justify-center"><span class="block text-4xl font-extrabold text-blue-800 mb-1">${formatNumber(stats.managedCases)}</span><span class="text-lg text-blue-700 font-bold uppercase tracking-wider">代管中</span></div>`:''}${stats.negotiationCases>0?`<div onclick="window.openModalList('negotiation')" class="bg-purple-100 p-3 rounded-xl text-center cursor-pointer hover:bg-purple-200 transition-all border border-purple-300 flex flex-col justify-center"><span class="block text-4xl font-extrabold text-purple-800 mb-1">${formatNumber(stats.negotiationCases)}</span><span class="text-lg text-purple-700 font-bold uppercase tracking-wider">協商中</span></div>`:''}</div></div><div class="grid grid-cols-2 gap-3"><div class="bg-white rounded-xl p-3 shadow-md border border-gray-200 text-center cursor-pointer hover:shadow-lg transition-all" onclick="window.openTrendModal()"><i data-lucide="trending-up" class="w-7 h-7 text-emerald-600 mx-auto mb-1"></i><h3 class="font-bold text-gray-800 text-sm">淨收入趨勢圖</h3><p class="text-[10px] text-gray-500 mt-1">歷年/近12月</p></div><div class="bg-white rounded-xl p-3 shadow-md border border-gray-200 text-center cursor-pointer hover:shadow-lg transition-all" onclick="window.openBadDebtTrendModal()"><i data-lucide="trending-down" class="w-7 h-7 text-pink-600 mx-auto mb-1"></i><h3 class="font-bold text-gray-800 text-sm">呆帳趨勢圖</h3><p class="text-[10px] text-gray-500 mt-1">歷年/近12月</p></div></div></div></div></div>`;
 }
 function renderList() {
     const batchDeleteHeader = state.batchDeleteMode?`<th class="p-2 font-semibold text-gray-700 text-sm whitespace-nowrap text-center sticky top-0 z-40 bg-gray-50 border-r border-gray-300" style="min-width:40px;width:40px;left:0;"><input type="checkbox" onclick="window.selectAllVisibleCasesForBatch()" ${state.selectedCasesForBatch.length>0?'checked':''} class="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"></th>`:'';
@@ -3219,7 +3288,7 @@ function renderForm() {
     // 已還款期數與最後繳款日
     const repaidCount = isEdit ? parseSchedule(state.editingRecord.schedule || '').length : 0;
     const lastPayDate = isEdit ? getLastRepaymentDateStr(state.editingRecord) : '';
-    return `<div class="max-w-5xl mx-auto bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden animate-fade-in flex flex-col h-[calc(100vh-6rem)]"><div class="bg-white border-b border-gray-200 p-4 flex justify-between items-center"><div class="flex items-center"><button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁"><i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i></button><div><h2 class="text-xl font-bold text-gray-800">${isEdit?'編輯案件':'新增案件'}</h2><p class="text-sm text-gray-500 mt-1">填寫或修改案件資訊</p></div></div><div class="flex items-center space-x-3">${state.history.length>0?`<button onclick="window.goBack()" class="flex items-center px-4 py-2 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg transition-colors font-medium shadow-sm"><i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁</button>`:''}${renderUserSwitcher()}</div></div><div class="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-sm flex-1 overflow-y-auto custom-scrollbar"><div class="lg:col-span-4 bg-gray-50 p-3 rounded-lg border border-gray-200"><h4 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 border-b border-gray-200 pb-1">基本與聯絡資料</h4><div class="grid grid-cols-2 md:grid-cols-4 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">借款人</label><input type="text" id="input_borrower" value="${formData.borrower}" oninput="window.updateFormData('borrower', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">身分證字號</label><input type="text" id="input_idNumber" value="${formData.idNumber}" oninput="window.updateFormData('idNumber', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">工作</label><input type="text" id="input_job" value="${formData.job}" oninput="window.updateFormData('job', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">經辦人</label><input type="text" id="input_agent" value="${formData.agent}" oninput="window.updateFormData('agent', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div class="md:col-span-2"><label class="block text-[10px] text-gray-500 mb-0.5">住址</label><input type="text" id="input_address" value="${formData.address}" oninput="window.updateFormData('address', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">電話</label><input type="text" id="input_telephone" value="${formData.telephone}" oninput="window.updateFormData('telephone', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">手機</label><input type="text" id="input_mobile" value="${formData.mobile}" oninput="window.updateFormData('mobile', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div></div></div><div class="lg:col-span-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3"><div class="lg:col-span-2 bg-blue-50 p-3 rounded-lg border border-blue-100"><h4 class="text-xs font-bold text-blue-800 uppercase tracking-wider mb-2 border-b border-blue-200 pb-1">貸款設定</h4><div class="grid grid-cols-2 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">狀態</label><select onchange="window.updateFormData('status', this.value, true)" class="w-full py-1 px-2 border rounded outline-none bg-white text-sm"><option value="1" ${formData.status=='1'?'selected':''}>1 - 進行中</option>${canUseStatus2?`<option value="2" ${formData.status=='2'?'selected':''}>2 - 代管案件</option>`:''}<option value="3" ${formData.status=='3'?'selected':''}>3 - 呆帳</option><option value="5" ${formData.status=='5'?'selected':''}>5 - 協商中</option><option value="0" ${formData.status=='0'?'selected':''}>0 - 已結案</option><option value="4" ${formData.status=='4'?'selected':''}>4 - 已結案呆帳</option></select></div><div><label class="block text-[10px] text-gray-500 mb-0.5">方式</label><select onchange="window.updateFormData('method', this.value, true)" class="w-full py-1 px-2 border rounded outline-none bg-white text-sm" ${formData.status==='5'?'disabled':''}><option value="叨簿子" ${formData.method=='叨簿子'?'selected':''}>叨簿子</option><option value="設定" ${formData.method=='設定'?'selected':''}>設定</option><option value="票貼" ${formData.method=='票貼'?'selected':''}>票貼</option><option value="小額" ${formData.method=='小額'?'selected':''}>小額</option></select></div><div><label class="block text-[10px] text-gray-500 mb-0.5">借款金額(債權) <span class="text-red-500">*</span></label><input type="number" id="input_loanAmount" value="${formData.loanAmount}" oninput="window.updateFormData('loanAmount', this.value); this.classList.remove('border-red-500','ring-2','ring-red-200','bg-red-50')" class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" placeholder="必填" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">放款金額(實際)</label><input type="number" id="input_disbursed" value="${formData.disbursed}" oninput="window.updateFormData('disbursed', this.value)" class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">放款日期</label><input type="date" id="input_date" value="${formData.date}" oninput="window.updateFormData('date', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm" /></div>${(formData.status==='3' || formData.status==='4' || formData.status==='5')?`<div><label class="block text-[10px] text-red-600 mb-0.5 font-bold">呆帳起始月</label><input type="month" id="input_badDebtStartMonth" value="${formData.badDebtStartMonth||''}" oninput="window.updateFormData('badDebtStartMonth', this.value)" class="w-full py-1 px-2 border border-red-300 rounded outline-none font-mono bg-red-50 text-sm" /><p class="text-[9px] text-red-500 mt-1">手動指定呆帳/協商起始月（留空則自動從還款記錄推算）</p></div>`:''}${formData.status==='5'?`<div><label class="block text-[10px] text-purple-600 mb-0.5 font-bold">協議生效月 (蔡依萱式)</label><input type="month" id="input_negotiationStartMonth" value="${formData.negotiationStartMonth||''}" oninput="window.updateFormData('negotiationStartMonth', this.value)" class="w-full py-1 px-2 border border-purple-300 rounded outline-none font-mono bg-purple-50 text-sm" /><p class="text-[9px] text-purple-500 mt-1">協議從這月才開始生效。之前月份用一般 P+I 計算，這月之後用協商本金。</p></div>`:''}${formData.status==='3'?`<div><label class="block text-[10px] text-red-600 mb-0.5 font-bold">強制執行狀態</label><select onchange="window.updateFormData('executionStatus', this.value)" class="w-full py-1 px-2 border border-red-300 rounded outline-none font-mono bg-red-50 text-sm"><option value="" ${!formData.executionStatus?'selected':''}>無</option><option value="in_progress" ${formData.executionStatus==='in_progress'?'selected':''}>進行中</option><option value="completed" ${formData.executionStatus==='completed'?'selected':''}>已結案 (排除圖表)</option></select><p class="text-[9px] text-red-500 mt-1">已完成強制執行的案件將不會出現在呆帳趨勢圖中</p></div>`:''}</div></div><div class="lg:col-span-2 bg-emerald-50 p-3 rounded-lg border border-emerald-100"><h4 class="text-xs font-bold text-emerald-800 uppercase tracking-wider mb-2 border-b border-emerald-200 pb-1">還款條件</h4><div class="grid grid-cols-3 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">期數</label><input type="number" id="input_terms" value="${formData.terms}" oninput="window.updateFormData('terms', this.value)" ${formData.status==='5'?'disabled':''} class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">利率(%)</label><input type="text" id="input_interestRate" value="${formData.interestRate}" oninput="window.updateFormData('interestRate', this.value)" ${formData.status==='5'?'disabled':''} class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">每期還款日</label><input type="text" id="input_repayDay" value="${formData.repayDay}" oninput="window.updateFormData('repayDay', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm" /></div>${formData.status==='2'?`<div class="col-span-3 border-t border-emerald-200 my-1"></div><div><label class="block text-[10px] text-blue-600 mb-0.5">借款利率 (%)</label><input type="text" id="input_specialRate" value="${formData.specialRate}" oninput="window.updateFormData('specialRate', this.value)" class="w-full py-1 px-2 border border-blue-300 rounded font-mono bg-white text-sm" placeholder="例如: 0.5"></div><div><label class="block text-[10px] text-blue-600 mb-0.5">應付 (給委託人)</label><input type="text" id="input_expectedPayment" value="${formatNumber(formData.expectedPayment||0)}" readonly class="w-full py-1 px-2 border border-blue-300 rounded font-mono bg-blue-50 text-blue-800 text-sm" /></div>`:''}${formData.status==='5'?`<div class="col-span-3 border-t border-purple-200 my-1 pt-2"><h4 class="text-xs font-bold text-purple-700 uppercase tracking-wider mb-1">協商還款設定</h4><div class="grid grid-cols-1 gap-3"><div><label class="block text-[10px] text-purple-600 mb-0.5 font-bold">協商本金 (每期還款)</label><input type="number" id="input_negotiationPrincipal" value="${formData.negotiationPrincipal}" oninput="window.updateFormData('negotiationPrincipal', this.value)" class="w-full py-1 px-2 border border-purple-300 rounded outline-none font-mono bg-purple-50 text-purple-800 text-sm" /><p class="text-[9px] text-purple-500 mt-1">協商案件每期固定還款本金，無利息</p></div></div></div>`:`<div class="col-span-3 grid grid-cols-2 gap-3 mt-1"><div><label class="block text-[10px] text-gray-500 mb-0.5 font-bold">每期本金 (合約)</label><input type="number" id="input_principalPerTerm" value="${formData.principalPerTerm}" oninput="window.updateFormData('principalPerTerm', this.value)" class="w-full py-1 px-2 border rounded outline-none font-mono bg-gray-100 text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5 font-bold">${formData.status==='2'?'管理費':'每期利息'} (合約)</label><input type="number" id="input_interestPerTerm" value="${formData.interestPerTerm}" oninput="window.updateFormData('interestPerTerm', this.value)" ${formData.status==='2'?'readonly':''} class="w-full py-1 px-2 border rounded outline-none font-mono ${formData.status==='2'?'bg-blue-50 text-blue-800':'bg-gray-100'} text-sm" /></div></div>`}${isEdit?`<div class="col-span-3 border-t border-orange-200 my-1 pt-1"><h4 class="text-[10px] font-bold text-orange-600 uppercase tracking-wider mb-1">本期調整 (當月實收)</h4><div class="grid grid-cols-2 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">本期本金</label><input type="number" id="input_currentPrincipal" value="${formData.currentPrincipal!==undefined?formData.currentPrincipal:(formData.status==='5'?formData.negotiationPrincipal:formData.principalPerTerm)}" oninput="window.updateFormData('currentPrincipal', this.value)" class="w-full py-1 px-2 border border-orange-300 rounded outline-none font-mono bg-orange-50 text-sm text-gray-700 font-bold" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">本期利息</label><input type="number" id="input_currentInterest" value="${formData.currentInterest!==undefined?formData.currentInterest:(formData.status==='5'?0:formData.interestPerTerm)}" oninput="window.updateFormData('currentInterest', this.value)" class="w-full py-1 px-2 border border-orange-300 rounded outline-none font-mono bg-orange-50 text-sm text-gray-700 font-bold" /></div></div></div>`:''}</div></div><div class="lg:col-span-4"><label class="block text-[10px] text-gray-500 mb-0.5">附註</label><textarea rows="2" id="input_note" oninput="window.updateFormData('note', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm resize-none">${formData.note}</textarea></div>${isEdit?`<div class="lg:col-span-4 bg-yellow-50 p-2 rounded border border-yellow-200 grid grid-cols-4 gap-2"><div><label class="block text-[10px] text-gray-500">欠款</label><span id="display_arrears" class="font-mono font-bold text-red-600">${formatNumber(calc.arrears)}</span></div><div><label class="block text-[10px] text-gray-500">在外本金</label><span id="display_outstanding" class="font-mono font-bold">${formatNumber(calc.outstanding)}</span></div>${formData.status==='5'?`<div><label class="block text-[10px] text-purple-500">協商本金</label><span id="display_negotiation" class="font-mono font-bold text-purple-600">${formatNumber(formData.negotiationPrincipal||0)}</span></div>`:''}<div><label class="block text-[10px] text-gray-500">已還款期數</label><span class="font-mono font-bold text-blue-600 clickable-repaid" onclick="window.openModal('schedule', '${state.editingRecord.id}')">${repaidCount} 期 <i data-lucide="calendar-days" class="w-3 h-3 inline ml-1"></i></span></div>${lastPayDate?`<div class="col-span-1"><label class="block text-[10px] text-gray-500">最後繳款日</label><span class="font-mono font-bold">${lastPayDate}</span></div>`:''}<div class="col-span-1 flex justify-end space-x-2"><button onclick="window.duplicateCase()" class="px-3 py-1 bg-blue-100 text-blue-600 rounded hover:bg-blue-200 text-xs font-bold flex items-center"><i data-lucide="copy" class="w-3 h-3 mr-1"></i>複製案件</button><button onclick="window.handleDelete('${state.editingRecord.id}')" class="px-3 py-1 bg-red-100 text-red-600 rounded hover:bg-red-200 text-xs font-bold flex items-center"><i data-lucide="trash-2" class="w-3 h-3 mr-1"></i>刪除案件</button></div></div>`:''}</div><div class="bg-white px-6 py-4 w-full flex justify-end items-center gap-6 border-t border-gray-100 shrink-0 mt-auto"><button onclick="window.setActiveTab('list')" class="text-gray-500 hover:text-gray-800 text-sm font-medium transition-colors">取消</button><button onclick="window.handleSaveForm()" class="px-6 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 shadow-sm flex items-center font-bold text-sm transition-transform active:scale-95"><i data-lucide="save" class="w-4 h-4 mr-2"></i>儲存資料</button></div></div>`;
+    return `<div class="max-w-5xl mx-auto bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden animate-fade-in flex flex-col h-[calc(100vh-6rem)]"><div class="bg-white border-b border-gray-200 p-4 flex justify-between items-center"><div class="flex items-center"><button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁"><i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i></button><div><h2 class="text-xl font-bold text-gray-800">${isEdit?'編輯案件':'新增案件'}</h2><p class="text-sm text-gray-500 mt-1">填寫或修改案件資訊</p></div></div><div class="flex items-center space-x-3">${state.history.length>0?`<button onclick="window.goBack()" class="flex items-center px-4 py-2 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg transition-colors font-medium shadow-sm"><i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁</button>`:''}${renderUserSwitcher()}</div></div><div class="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-sm flex-1 overflow-y-auto custom-scrollbar"><div class="lg:col-span-4 bg-gray-50 p-3 rounded-lg border border-gray-200"><h4 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 border-b border-gray-200 pb-1">基本與聯絡資料</h4><div class="grid grid-cols-2 md:grid-cols-4 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">借款人</label><input type="text" id="input_borrower" value="${formData.borrower}" oninput="window.updateFormData('borrower', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">身分證字號</label><input type="text" id="input_idNumber" value="${formData.idNumber}" oninput="window.updateFormData('idNumber', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">工作</label><input type="text" id="input_job" value="${formData.job}" oninput="window.updateFormData('job', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">經辦人</label><input type="text" id="input_agent" value="${formData.agent}" oninput="window.updateFormData('agent', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div class="md:col-span-2"><label class="block text-[10px] text-gray-500 mb-0.5">住址</label><input type="text" id="input_address" value="${formData.address}" oninput="window.updateFormData('address', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">電話</label><input type="text" id="input_telephone" value="${formData.telephone}" oninput="window.updateFormData('telephone', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">手機</label><input type="text" id="input_mobile" value="${formData.mobile}" oninput="window.updateFormData('mobile', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div></div></div><div class="lg:col-span-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3"><div class="lg:col-span-2 bg-blue-50 p-3 rounded-lg border border-blue-100"><h4 class="text-xs font-bold text-blue-800 uppercase tracking-wider mb-2 border-b border-blue-200 pb-1">貸款設定</h4><div class="grid grid-cols-2 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">狀態</label><select onchange="window.updateFormData('status', this.value, true)" class="w-full py-1 px-2 border rounded outline-none bg-white text-sm"><option value="1" ${formData.status=='1'?'selected':''}>1 - 進行中</option>${canUseStatus2?`<option value="2" ${formData.status=='2'?'selected':''}>2 - 代管案件</option>`:''}<option value="3" ${formData.status=='3'?'selected':''}>3 - 呆帳</option><option value="5" ${formData.status=='5'?'selected':''}>5 - 協商中</option><option value="0" ${formData.status=='0'?'selected':''}>0 - 已結案</option><option value="4" ${formData.status=='4'?'selected':''}>4 - 已結案呆帳</option></select></div><div><label class="block text-[10px] text-gray-500 mb-0.5">方式</label><select onchange="window.updateFormData('method', this.value, true)" class="w-full py-1 px-2 border rounded outline-none bg-white text-sm" ${formData.status==='5'?'disabled':''}><option value="叨簿子" ${formData.method=='叨簿子'?'selected':''}>叨簿子</option><option value="設定" ${formData.method=='設定'?'selected':''}>設定</option><option value="票貼" ${formData.method=='票貼'?'selected':''}>票貼</option><option value="小額" ${formData.method=='小額'?'selected':''}>小額</option></select></div><div><label class="block text-[10px] text-gray-500 mb-0.5">借款金額(債權) <span class="text-red-500">*</span></label><input type="number" id="input_loanAmount" value="${formData.loanAmount}" oninput="window.updateFormData('loanAmount', this.value); this.classList.remove('border-red-500','ring-2','ring-red-200','bg-red-50')" class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" placeholder="必填" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">放款金額(實際)</label><input type="number" id="input_disbursed" value="${formData.disbursed}" oninput="window.updateFormData('disbursed', this.value)" class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">放款日期</label><input type="date" id="input_date" value="${formData.date}" oninput="window.updateFormData('date', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm" /></div>${(formData.status==='3' || formData.status==='4' || formData.status==='5')?`<div><label class="block text-[10px] text-red-600 mb-0.5 font-bold">呆帳起始月</label><input type="month" id="input_badDebtStartMonth" value="${formData.badDebtStartMonth||''}" oninput="window.updateFormData('badDebtStartMonth', this.value)" class="w-full py-1 px-2 border border-red-300 rounded outline-none font-mono bg-red-50 text-sm" /><p class="text-[9px] text-red-500 mt-1">手動指定呆帳/協商起始月（留空則自動從還款記錄推算）</p></div>`:''}${formData.status==='5'?`<div><label class="block text-[10px] text-purple-600 mb-0.5 font-bold">協議生效月</label><input type="month" id="input_negotiationStartMonth" value="${formData.negotiationStartMonth||''}" oninput="window.updateFormData('negotiationStartMonth', this.value)" class="w-full py-1 px-2 border border-purple-300 rounded outline-none font-mono bg-purple-50 text-sm" /><p class="text-[9px] text-purple-500 mt-1">協議從這月才開始生效。之前月份用一般 P+I 計算，這月之後用協商本金。</p></div>`:''}${formData.status==='3'?`<div><label class="block text-[10px] text-red-600 mb-0.5 font-bold">強制執行狀態</label><select onchange="window.updateFormData('executionStatus', this.value)" class="w-full py-1 px-2 border border-red-300 rounded outline-none font-mono bg-red-50 text-sm"><option value="" ${!formData.executionStatus?'selected':''}>無</option><option value="in_progress" ${formData.executionStatus==='in_progress'?'selected':''}>進行中</option><option value="completed" ${formData.executionStatus==='completed'?'selected':''}>已結案 (排除圖表)</option></select><p class="text-[9px] text-red-500 mt-1">已完成強制執行的案件將不會出現在呆帳趨勢圖中</p></div>`:''}</div></div><div class="lg:col-span-2 bg-emerald-50 p-3 rounded-lg border border-emerald-100"><h4 class="text-xs font-bold text-emerald-800 uppercase tracking-wider mb-2 border-b border-emerald-200 pb-1">還款條件</h4><div class="grid grid-cols-3 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">期數</label><input type="number" id="input_terms" value="${formData.terms}" oninput="window.updateFormData('terms', this.value)" ${formData.status==='5'?'disabled':''} class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">利率(%)</label><input type="text" id="input_interestRate" value="${formData.interestRate}" oninput="window.updateFormData('interestRate', this.value)" ${formData.status==='5'?'disabled':''} class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">每期還款日</label><input type="text" id="input_repayDay" value="${formData.repayDay}" oninput="window.updateFormData('repayDay', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm" /></div>${formData.status==='2'?`<div class="col-span-3 border-t border-emerald-200 my-1"></div><div><label class="block text-[10px] text-blue-600 mb-0.5">借款利率 (%)</label><input type="text" id="input_specialRate" value="${formData.specialRate}" oninput="window.updateFormData('specialRate', this.value)" class="w-full py-1 px-2 border border-blue-300 rounded font-mono bg-white text-sm" placeholder="例如: 0.5"></div><div><label class="block text-[10px] text-blue-600 mb-0.5">應付 (給委託人)</label><input type="text" id="input_expectedPayment" value="${formatNumber(formData.expectedPayment||0)}" readonly class="w-full py-1 px-2 border border-blue-300 rounded font-mono bg-blue-50 text-blue-800 text-sm" /></div>`:''}${formData.status==='5'?`<div class="col-span-3 border-t border-purple-200 my-1 pt-2"><h4 class="text-xs font-bold text-purple-700 uppercase tracking-wider mb-1">協商還款設定</h4><div class="grid grid-cols-1 gap-3"><div><label class="block text-[10px] text-purple-600 mb-0.5 font-bold">協商本金 (每期還款)</label><input type="number" id="input_negotiationPrincipal" value="${formData.negotiationPrincipal}" oninput="window.updateFormData('negotiationPrincipal', this.value)" class="w-full py-1 px-2 border border-purple-300 rounded outline-none font-mono bg-purple-50 text-purple-800 text-sm" /><p class="text-[9px] text-purple-500 mt-1">協商案件每期固定還款本金，無利息</p></div></div></div>`:`<div class="col-span-3 grid grid-cols-2 gap-3 mt-1"><div><label class="block text-[10px] text-gray-500 mb-0.5 font-bold">每期本金 (合約)</label><input type="number" id="input_principalPerTerm" value="${formData.principalPerTerm}" oninput="window.updateFormData('principalPerTerm', this.value)" class="w-full py-1 px-2 border rounded outline-none font-mono bg-gray-100 text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5 font-bold">${formData.status==='2'?'管理費':'每期利息'} (合約)</label><input type="number" id="input_interestPerTerm" value="${formData.interestPerTerm}" oninput="window.updateFormData('interestPerTerm', this.value)" ${formData.status==='2'?'readonly':''} class="w-full py-1 px-2 border rounded outline-none font-mono ${formData.status==='2'?'bg-blue-50 text-blue-800':'bg-gray-100'} text-sm" /></div></div>`}${isEdit?`<div class="col-span-3 border-t border-orange-200 my-1 pt-1"><h4 class="text-[10px] font-bold text-orange-600 uppercase tracking-wider mb-1">本期調整 (當月實收)</h4><div class="grid grid-cols-2 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">本期本金</label><input type="number" id="input_currentPrincipal" value="${formData.currentPrincipal!==undefined?formData.currentPrincipal:(formData.status==='5'?formData.negotiationPrincipal:formData.principalPerTerm)}" oninput="window.updateFormData('currentPrincipal', this.value)" class="w-full py-1 px-2 border border-orange-300 rounded outline-none font-mono bg-orange-50 text-sm text-gray-700 font-bold" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">本期利息</label><input type="number" id="input_currentInterest" value="${formData.currentInterest!==undefined?formData.currentInterest:(formData.status==='5'?0:formData.interestPerTerm)}" oninput="window.updateFormData('currentInterest', this.value)" class="w-full py-1 px-2 border border-orange-300 rounded outline-none font-mono bg-orange-50 text-sm text-gray-700 font-bold" /></div></div></div>`:''}</div></div><div class="lg:col-span-4"><label class="block text-[10px] text-gray-500 mb-0.5">附註</label><textarea rows="2" id="input_note" oninput="window.updateFormData('note', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm resize-none">${formData.note}</textarea></div>${isEdit?`<div class="lg:col-span-4 bg-yellow-50 p-2 rounded border border-yellow-200 grid grid-cols-4 gap-2"><div><label class="block text-[10px] text-gray-500">欠款</label><span id="display_arrears" class="font-mono font-bold text-red-600">${formatNumber(calc.arrears)}</span></div><div><label class="block text-[10px] text-gray-500">在外本金</label><span id="display_outstanding" class="font-mono font-bold">${formatNumber(calc.outstanding)}</span></div>${formData.status==='5'?`<div><label class="block text-[10px] text-purple-500">協商本金</label><span id="display_negotiation" class="font-mono font-bold text-purple-600">${formatNumber(formData.negotiationPrincipal||0)}</span></div>`:''}<div><label class="block text-[10px] text-gray-500">已還款期數</label><span class="font-mono font-bold text-blue-600 clickable-repaid" onclick="window.openModal('schedule', '${state.editingRecord.id}')">${repaidCount} 期 <i data-lucide="calendar-days" class="w-3 h-3 inline ml-1"></i></span></div>${lastPayDate?`<div class="col-span-1"><label class="block text-[10px] text-gray-500">最後繳款日</label><span class="font-mono font-bold">${lastPayDate}</span></div>`:''}<div class="col-span-1 flex justify-end space-x-2"><button onclick="window.duplicateCase()" class="px-3 py-1 bg-blue-100 text-blue-600 rounded hover:bg-blue-200 text-xs font-bold flex items-center"><i data-lucide="copy" class="w-3 h-3 mr-1"></i>複製案件</button><button onclick="window.handleDelete('${state.editingRecord.id}')" class="px-3 py-1 bg-red-100 text-red-600 rounded hover:bg-red-200 text-xs font-bold flex items-center"><i data-lucide="trash-2" class="w-3 h-3 mr-1"></i>刪除案件</button></div></div>`:''}</div><div class="bg-white px-6 py-4 w-full flex justify-end items-center gap-6 border-t border-gray-100 shrink-0 mt-auto"><button onclick="window.setActiveTab('list')" class="text-gray-500 hover:text-gray-800 text-sm font-medium transition-colors">取消</button><button onclick="window.handleSaveForm()" class="px-6 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 shadow-sm flex items-center font-bold text-sm transition-transform active:scale-95"><i data-lucide="save" class="w-4 h-4 mr-2"></i>儲存資料</button></div></div>`;
 }
 function renderRepayment() {
     let repaymentCases = state.records.filter(r => {
@@ -3289,7 +3358,7 @@ function renderApp() {
         if (state.modalType === 'active') filteredRecs = currentStats.activeRecords;
         else if (state.modalType === 'unpaid') filteredRecs = currentStats.unpaidRecords;
         else if (state.modalType === 'closed') filteredRecs = currentStats.closedRecords;
-        else if (state.modalType === 'badDebt') filteredRecs = currentStats.badDebtCases;
+        else if (state.modalType === 'badDebt') filteredRecs = currentStats.historicalBadDebtCases;
         else if (state.modalType === 'managed') filteredRecs = currentStats.managedRecords;
         else if (state.modalType === 'negotiation') filteredRecs = currentStats.negotiationRecords;
         else {
@@ -3393,7 +3462,20 @@ function renderApp() {
             else if (state.modalType === 'negotiationCollected') filteredRecs = baseRecords.filter(r => { const {isPaid}=getPaymentStatus(r); return isPaid && r.status==='5'; });
             else filteredRecs = baseRecords.filter(r => r.status==='1'||r.status==='2'||r.status==='5');
         }
-        filteredRecs.sort((a,b) => { const da = a.date?new Date(a.date.replace(/\//g,'-')):new Date('9999-12-31'); const db = b.date?new Date(b.date.replace(/\//g,'-')):new Date('9999-12-31'); return da-db; });
+        // ★ 呆帳 modal 用呆帳起始時間排序 (其他 modal 用放款日)
+        if (state.modalType === 'badDebt') {
+            filteredRecs.sort((a, b) => {
+                const da = getBadDebtStartDate(a);
+                const db = getBadDebtStartDate(b);
+                // 沒日期的放最後
+                if (!da && !db) return 0;
+                if (!da) return 1;
+                if (!db) return -1;
+                return da - db;
+            });
+        } else {
+            filteredRecs.sort((a,b) => { const da = a.date?new Date(a.date.replace(/\//g,'-')):new Date('9999-12-31'); const db = b.date?new Date(b.date.replace(/\//g,'-')):new Date('9999-12-31'); return da-db; });
+        }
         const filteredWithDisplayIds = calculateDisplayIds(filteredRecs);
         let customHeaders = '', customRowBuilder = null;
         if (state.modalType === 'managed' || state.modalType === 'totalManagementFee') {
@@ -3423,6 +3505,14 @@ function renderApp() {
         } else if (state.modalType === 'totalIncome' || state.modalType === 'netIncome') {
             customHeaders = `<tr><th class="p-2">借款人</th><th class="p-2 text-right">利息累計</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th>`;
             customRowBuilder = (r,calc,status) => `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId||r.caseNumber||''})</span></td><td class="p-2 text-right font-mono font-bold text-emerald-600">${formatNumber(calc.totalInterestPaid)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td><td class="p-2 text-center"><button onclick="window.updateState({modalType:null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button>`;
+        } else if (state.modalType === 'badDebt') {
+            // ★ 呆帳 modal: 顯示呆帳起始月 (用 getBadDebtStartDate 算)
+            customHeaders = `<tr><th class="p-2">借款人</th><th class="p-2 text-center">呆帳起始</th><th class="p-2 text-right">待追回金額</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th>`;
+            customRowBuilder = (r, calc, status) => {
+                const startDate = getBadDebtStartDate(r);
+                const startStr = startDate ? `${startDate.getFullYear()}-${String(startDate.getMonth()+1).padStart(2,'0')}` : '—';
+                return `<tr class="hover:bg-pink-50 transition-colors"><td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId||r.caseNumber||''})</span></td><td class="p-2 text-center font-mono text-pink-700 font-bold">${startStr}</td><td class="p-2 text-right font-mono font-bold text-red-600">${formatNumber(Math.max(0, Number(calc.arrears)||0))}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td><td class="p-2 text-center"><button onclick="window.updateState({modalType:null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button>`;
+            };
         } else if (state.modalType === 'outstanding') {
             customHeaders = `<tr><th class="p-2">借款人</th><th class="p-2 text-right">在外本金</th><th class="p-2 text-center">狀態</th><th class="p-2 text-center">操作</th>`;
             customRowBuilder = (r,calc,status) => `<tr class="hover:bg-gray-50 transition-colors"><td class="p-2 font-bold text-gray-800">${r.borrower} <span class="text-xs font-normal text-gray-400">(${r.displayId||r.caseNumber||''})</span></td><td class="p-2 text-right font-mono font-bold text-blue-600">${formatNumber(calc.outstanding)}</td><td class="p-2 text-center"><span class="px-2 py-1 rounded text-xs ${status.color}">${status.text}</span></td><td class="p-2 text-center"><button onclick="window.updateState({modalType:null}); window.startEdit('${r.id}')" class="text-blue-600 hover:underline text-xs">前往處理</button>`;
