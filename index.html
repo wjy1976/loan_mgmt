@@ -12,6 +12,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
     <!-- ECharts CDN -->
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
     
     <style>
         body { font-family: 'Inter', sans-serif; }
@@ -305,7 +306,7 @@ if (state.isDemoMode) {
 const initialFormState = {
     status: '1', method: '叨簿子', date: '', borrower: '', job: '', idNumber: '', address: '', telephone: '', mobile: '',
     loanAmount: '', disbursed: '', interestRate: '', specialRate: '', agent: '', terms: '', repayDay: '',
-    principalPerTerm: '', interestPerTerm: '', currentPrincipal: '', currentInterest: '', note: '', schedule: '', negotiationPrincipal: '', executionStatus: '', badDebtStartMonth: '', negotiationStartMonth: ''
+    principalPerTerm: '', interestPerTerm: '', currentPrincipal: '', currentInterest: '', note: '', schedule: '', negotiationPrincipal: '', executionStatus: '', badDebtStartMonth: '', negotiationStartMonth: '', caseImages: []
 };
 let formData = { ...initialFormState };
 
@@ -1045,6 +1046,106 @@ window.repairDatabase = async () => {
         console.error("修復失敗:", error);
         window.showError(`修復失敗: ${error.message}`);
     }
+};
+
+// === 圖片附件管理 ===
+// 壓縮圖片到最大寬度 1280px, jpeg 品質 0.5 (一般相片 < 150KB, 配合 Firestore 1MB 限制)
+const MAX_IMAGES = 5;
+const MAX_TOTAL_SIZE = 800 * 1024; // 800KB (Firestore 文件 1MB - 其他欄位)
+
+const compressImage = (file, maxWidth = 1280, quality = 0.5) => {
+    return new Promise((resolve, reject) => {
+        if (!file.type.startsWith('image/')) return reject(new Error('不是圖片檔'));
+        if (file.size > 8 * 1024 * 1024) return reject(new Error('檔案太大 (>8MB)，請先用其他工具壓縮'));
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const img = new Image();
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                let { width, height } = img;
+                if (width > maxWidth) {
+                    height = Math.round((maxWidth / width) * height);
+                    width = maxWidth;
+                }
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, width, height);
+                const dataUrl = canvas.toDataURL('image/jpeg', quality);
+                resolve({
+                    name: file.name,
+                    dataUrl: dataUrl,
+                    size: dataUrl.length,
+                    uploadedAt: Date.now()
+                });
+            };
+            img.onerror = () => reject(new Error('圖片讀取失敗'));
+            img.src = e.target.result;
+        };
+        reader.onerror = () => reject(new Error('檔案讀取失敗'));
+        reader.readAsDataURL(file);
+    });
+};
+
+window.handleCaseImageUpload = async (input) => {
+    const files = Array.from(input.files || []);
+    if (files.length === 0) return;
+    const current = formData.caseImages || [];
+    const currentSize = current.reduce((s, img) => s + (img.size || 0), 0);
+
+    if (current.length >= MAX_IMAGES) {
+        window.showError(`最多 ${MAX_IMAGES} 張附件`);
+        input.value = '';
+        return;
+    }
+    if (current.length + files.length > MAX_IMAGES) {
+        window.showError(`一次最多 ${MAX_IMAGES - current.length} 張附件`);
+        input.value = '';
+        return;
+    }
+    let addedSize = 0;
+    let addedCount = 0;
+    for (const file of files) {
+        try {
+            const compressed = await compressImage(file);
+            if (currentSize + addedSize + compressed.size > MAX_TOTAL_SIZE) {
+                window.showError(`總容量會超過 ${(MAX_TOTAL_SIZE/1024).toFixed(0)}KB 上限 (Firestore 限制), 已新增 ${addedCount} 張`);
+                break;
+            }
+            formData.caseImages = [...(formData.caseImages || []), compressed];
+            addedSize += compressed.size;
+            addedCount++;
+        } catch (err) {
+            window.showError(`${file.name}: ${err.message}`);
+        }
+    }
+    input.value = '';
+    renderForm();
+};
+
+window.removeCaseImage = (index) => {
+    if (!window.showConfirm('確定刪除這張附件?')) return;
+    formData.caseImages = (formData.caseImages || []).filter((_, i) => i !== index);
+    renderForm();
+};
+
+window.viewCaseImage = (index) => {
+    const img = (formData.caseImages || [])[index];
+    if (!img) return;
+    const overlay = document.createElement('div');
+    overlay.className = 'fixed inset-0 bg-black/90 flex items-center justify-center z-[60] p-4';
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+    overlay.innerHTML = `
+        <button class="absolute top-4 right-4 text-white text-3xl hover:bg-white/20 w-12 h-12 rounded-full flex items-center justify-center" onclick="this.parentElement.remove()">&times;</button>
+        <div class="max-w-5xl max-h-[90vh] flex flex-col items-center">
+            <img src="${img.dataUrl}" alt="${img.name}" class="max-w-full max-h-[80vh] object-contain rounded-lg shadow-2xl" />
+            <div class="text-white text-sm mt-3 text-center">
+                <div class="font-bold">${img.name}</div>
+                <div class="text-gray-400 text-xs mt-1">${(img.size/1024).toFixed(1)} KB · 點背景或 X 關閉</div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
 };
 
 const calculateStats = () => {
@@ -1793,6 +1894,7 @@ window.startEdit = (id) => {
     const record = state.records.find(r => r.id === id);
     if (record) {
         const recordCopy = JSON.parse(JSON.stringify(record));
+        if (!Array.isArray(recordCopy.caseImages)) recordCopy.caseImages = [];
         formData = { ...recordCopy };
         updateState({ editingRecord: recordCopy, activeTab: 'form' });
     } else window.showError("找不到要編輯的案件");
@@ -1863,6 +1965,111 @@ window.executeBatchDelete = async () => {
             }
         } catch(error) { showLoading(false); console.error("批次刪除失敗:", error); window.showError(`批次刪除失敗: ${error.message}`); }
     });
+};
+
+// === 批次清理已結案附件 ===
+// 找出 closed >= 6 個月 的案件，且能自動遞迼
+// 結清日期判斷優先級：lastRepaymentDate > updatedAt > record.date
+window.autoCleanupOldImages = async () => {
+    if (!firebaseAvailable || !auth.currentUser) return;
+    // 避免重複執行 (同一 session 一次)
+    if (sessionStorage.getItem('_auto_cleanup_done')) return;
+
+    const userCases = state.records.filter(r => {
+        if (state.isDemoMode) return r.ownerUid === 'demo';
+        if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) return r.ownerUid === state.viewingUid;
+        if (!state.isAdmin && !state.isDemoMode) return r.ownerUid === state.currentUserUid;
+        return true;
+    });
+    const SIX_MONTHS_MS = 180 * 24 * 60 * 60 * 1000;
+    const sixMonthsAgo = Date.now() - SIX_MONTHS_MS;
+    const candidates = userCases.filter(r => {
+        if (r.status !== '0' && r.status !== '4') return false;
+        if (!Array.isArray(r.caseImages) || r.caseImages.length === 0) return false;
+
+        let closedDate = null;
+        if (r.lastRepaymentDate) {
+            closedDate = new Date(r.lastRepaymentDate);
+        } else if (r.updatedAt) {
+            // Firestore Timestamp 物件
+            closedDate = r.updatedAt.toDate ? r.updatedAt.toDate() : new Date(r.updatedAt);
+        } else if (r.date) {
+            closedDate = new Date(r.date);
+        }
+        if (!closedDate || isNaN(closedDate.getTime())) return false;
+        return closedDate.getTime() < sixMonthsAgo;
+    });
+
+    sessionStorage.setItem('_auto_cleanup_done', '1');
+
+    if (candidates.length === 0) return;
+    try {
+        const batch = writeBatch(db);
+        let totalImages = 0;
+        candidates.forEach(r => {
+            batch.update(doc(db, 'artifacts', appId, 'public', 'data', 'loan_cases', r.id), { caseImages: [], updatedAt: serverTimestamp() });
+            totalImages += r.caseImages.length;
+        });
+        await batch.commit();
+        // 更新本地 state
+        const updatedRecords = state.records.map(r => {
+            if (candidates.find(c => c.id === r.id)) return { ...r, caseImages: [] };
+            return r;
+        });
+        updateState({ records: updatedRecords });
+        window.showSuccess(`✓ 自動清理: ${candidates.length} 個結清 >6 月案件的附件 (${totalImages} 張)`);
+    } catch (err) {
+        console.error('Auto cleanup error:', err);
+        // 不要彈錯誤讓使用者煩惱
+    }
+};
+
+window.cleanupClosedCaseImages = async () => {
+    if (!firebaseAvailable) { window.showError("Firebase 未連線"); return; }
+    const userCases = state.records.filter(r => {
+        if (state.isDemoMode) return r.ownerUid === 'demo';
+        if (state.isAdmin && state.viewingUid !== 'all' && state.viewingUid !== null) return r.ownerUid === state.viewingUid;
+        if (!state.isAdmin && !state.isDemoMode) return r.ownerUid === state.currentUserUid;
+        return true;
+    });
+    const closedWithImages = userCases.filter(r => (r.status === '0' || r.status === '4') && Array.isArray(r.caseImages) && r.caseImages.length > 0);
+    if (closedWithImages.length === 0) {
+        window.showSuccess("✓ 沒有已結案案件的附件需要清理");
+        return;
+    }
+    const totalImages = closedWithImages.reduce((s, r) => s + r.caseImages.length, 0);
+    const totalSize = closedWithImages.reduce((s, r) => s + r.caseImages.reduce((ss, i) => ss + (i.size || 0), 0), 0);
+    const sizeMB = (totalSize / 1024 / 1024).toFixed(2);
+
+    const choice = window.showConfirm
+        ? window.showConfirm(`找到 ${closedWithImages.length} 個已結案案件有附件圖片\n共 ${totalImages} 張, 約 ${sizeMB} MB\n\n確定要全部清除嗎?`)
+        : confirm(`找到 ${closedWithImages.length} 個已結案案件有附件圖片\n共 ${totalImages} 張, 約 ${sizeMB} MB\n\n確定要全部清除嗎?`);
+    if (!choice) return;
+
+    showLoading(true);
+    try {
+        const batch = writeBatch(db);
+        let cleared = 0;
+        closedWithImages.forEach(r => {
+            batch.update(doc(db, 'artifacts', appId, 'public', 'data', 'loan_cases', r.id), { caseImages: [], updatedAt: serverTimestamp() });
+            cleared++;
+        });
+        await batch.commit();
+        // 更新本地 state
+        const updatedRecords = state.records.map(r => {
+            if ((r.status === '0' || r.status === '4') && Array.isArray(r.caseImages) && r.caseImages.length > 0) {
+                return { ...r, caseImages: [] };
+            }
+            return r;
+        });
+        updateState({ records: updatedRecords });
+        showLoading(false);
+        window.showSuccess(`✓ 已清除 ${cleared} 個案件的附件 (${totalImages} 張, ${sizeMB} MB)`);
+    } catch (err) {
+        showLoading(false);
+        console.error('Cleanup error:', err);
+        window.showError(`清理失敗: ${err.message}`);
+    }
 };
 window.updateFormData = (key, val, shouldRender = false) => {
     formData[key] = val;
@@ -2248,7 +2455,7 @@ window.exportToExcel = () => {
     if (filteredWithDisplayIds.length === 0) { window.showError("目前無資料可匯出"); return; }
     let maxScheduleEntries = 0;
     filteredWithDisplayIds.forEach(record => { const entries = parseSchedule(record.schedule || ''); if (entries.length > maxScheduleEntries) maxScheduleEntries = entries.length; });
-    const verticalFields = ['編號','狀態','方式','放款日期','借款人','工作','借款金額','放款金額','利率(%)','銀行/人','期數','每期還款日期','每期還款本金','每期利息','還款期數','利息收入','欠款','在外本金','餘期','回本餘期','附註'];
+    const verticalFields = ['編號','狀態','方式','放款日期','借款人','工作','借款金額','放款金額','利率(%)','銀行/人','期數','每期還款日期','每期還款本金','每期利息','還款期數','利息收入','欠款','在外本金','餘期','回本餘期','附註','附件數','附件檔名'];
     let csvLines = [];
     verticalFields.forEach((fieldName) => {
         let rowValues = [fieldName];
@@ -2277,6 +2484,8 @@ window.exportToExcel = () => {
                 case '餘期': value = calc.remainingTerms || 0; break;
                 case '回本餘期': value = calc.roiTerms || 0; break;
                 case '附註': value = record.note || ''; break;
+                case '附件數': value = Array.isArray(record.caseImages) ? record.caseImages.length : 0; break;
+                case '附件檔名': value = Array.isArray(record.caseImages) ? record.caseImages.map(i => i.name).join('; ') : ''; break;
                 default: value = '';
             }
             rowValues.push(`"${String(value).replace(/"/g, '""')}"`);
@@ -2309,6 +2518,82 @@ window.exportToExcel = () => {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+};
+
+// === 匯出 ZIP (含圖片 + CSV) ===
+window.exportZipWithImages = async () => {
+    if (typeof JSZip === 'undefined') { window.showError("JSZip 還沒載入，請稍候再試"); return; }
+    let sourceRecords = state.records;
+    sourceRecords = getVisibleRecords();
+    const searchTerm = state.searchTerm.toLowerCase();
+    const filtered = sourceRecords.filter(r => r.borrower?.toLowerCase().includes(searchTerm) || r.displayId?.toLowerCase().includes(searchTerm) || r.method?.toLowerCase().includes(searchTerm));
+    if (filtered.length === 0) { window.showError("目前無資料可匯出"); return; }
+
+    showLoading(true);
+    try {
+        const zip = new JSZip();
+        const csvLines = [];
+        const fields = ['編號','狀態','借款人','借款金額','放款金額','欠款','附件數','附件檔名'];
+        fields.forEach(f => {
+            const row = [f];
+            filtered.forEach(record => {
+                let v = '';
+                const calc = calculateDerivedData(record);
+                if (f === '編號') v = record.displayId || record.caseNumber || '';
+                else if (f === '狀態') v = getStatusLabel(record.status).text;
+                else if (f === '借款人') v = record.borrower || '';
+                else if (f === '借款金額') v = formatNumber(record.loanAmount || 0);
+                else if (f === '放款金額') v = record.status === '2' ? '0' : formatNumber(record.disbursed || 0);
+                else if (f === '欠款') v = formatNumber(calc.arrears || 0);
+                else if (f === '附件數') v = Array.isArray(record.caseImages) ? record.caseImages.length : 0;
+                else if (f === '附件檔名') v = Array.isArray(record.caseImages) ? record.caseImages.map(i => i.name).join('; ') : '';
+                row.push(`"${String(v).replace(/"/g, '""')}"`);
+            });
+            csvLines.push(row.join(','));
+        });
+        zip.file('cases.csv', '\uFEFF' + csvLines.join('\n'));
+
+        const imagesFolder = zip.folder('images');
+        const usedNames = new Set();
+        let imageCount = 0;
+        filtered.forEach(record => {
+            if (!Array.isArray(record.caseImages)) return;
+            record.caseImages.forEach((img, idx) => {
+                if (!img.dataUrl || !img.name) return;
+                const ext = img.name.split('.').pop().toLowerCase() || 'jpg';
+                const baseName = img.name.replace(/\.[^.]+$/, '').replace(/[^\w\u4e00-\u9fa5\-]/g, '_');
+                let safeName = `${record.displayId || record.id || 'case'}_${idx+1}_${baseName}.${ext}`;
+                let counter = 1;
+                while (usedNames.has(safeName)) {
+                    safeName = `${record.displayId || record.id || 'case'}_${idx+1}_${baseName}_${counter}.${ext}`;
+                    counter++;
+                }
+                usedNames.add(safeName);
+                const base64 = img.dataUrl.split(',')[1];
+                const binary = atob(base64);
+                const bytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                imagesFolder.file(safeName, bytes);
+                imageCount++;
+            });
+        });
+
+        const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `財務管理含圖片_${new Date().toISOString().split('T')[0]}.zip`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        showLoading(false);
+        window.showSuccess(`✓ 已匯出 ZIP: ${filtered.length} 案件, ${imageCount} 張圖片`);
+    } catch (err) {
+        showLoading(false);
+        console.error('Export ZIP error:', err);
+        window.showError(`匯出失敗: ${err.message}`);
+    }
 };
 const MAP_ROWS = { STATUS:0, CATEGORY:1, LOAN_DATE:2, BORROWER:3, JOB:4, AMOUNT:5, ACTUAL_AMOUNT:6, INTEREST_RATE:7, AGENT:8, PERIODS:9, RULE_DAY:10, HISTORY_START:11 };
 const cleanNumber = (val) => val ? parseFloat(String(val).replace(/,/g, '').replace(/%/g, '').trim()) : 0;
@@ -3134,7 +3419,9 @@ function renderList() {
         return `<th class="p-2 font-semibold text-gray-700 text-sm whitespace-nowrap text-center ${stickyClass}" style="${style}">${field.label}</th>`;
     }).join('');
     const batchDeletePanel = state.batchDeleteMode?`<div class="mb-4 bg-red-50 border border-red-200 rounded-lg p-4 flex flex-col sm:flex-row justify-between items-center"><div class="flex items-center mb-2 sm:mb-0"><div class="w-10 h-10 flex items-center justify-center bg-red-100 text-red-600 rounded-full mr-3"><i data-lucide="trash-2" class="w-5 h-5"></i></div><div><h3 class="font-bold text-red-800">批次刪除模式</h3><p class="text-sm text-red-600">已選取 <span class="font-bold">${state.selectedCasesForBatch.length}</span> 筆案件</p></div></div><div class="flex space-x-2"><button onclick="window.selectAllVisibleCasesForBatch()" class="px-4 py-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 flex items-center text-sm font-bold"><i data-lucide="check-square" class="w-4 h-4 mr-2"></i>${state.selectedCasesForBatch.length>0?'取消全選':'全選本頁'}</button><button onclick="window.executeBatchDelete()" ${state.selectedCasesForBatch.length===0?'disabled':''} class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center text-sm font-bold disabled:opacity-50 disabled:cursor-not-allowed"><i data-lucide="trash-2" class="w-4 h-4 mr-2"></i>刪除選取案件 (${state.selectedCasesForBatch.length}筆)</button><button onclick="window.toggleBatchDeleteMode()" class="px-4 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 flex items-center text-sm font-bold"><i data-lucide="x" class="w-4 h-4 mr-2"></i>取消</button></div></div>`:'';
-    return `<div class="flex flex-col h-[calc(100vh-6rem)] animate-fade-in space-y-4"><div class="bg-white border-b border-gray-200 p-4 flex justify-between items-center"><div class="flex items-center"><button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁"><i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i></button><div><h2 class="text-xl font-bold text-gray-800">案件資料列表</h2><p class="text-sm text-gray-500 mt-1"></p></div></div><div class="flex items-center space-x-3">${state.history.length>0?`<button onclick="window.goBack()" class="flex items-center px-4 py-2 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg transition-colors font-medium shadow-sm"><i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁</button>`:''}${renderUserSwitcher()}</div></div><div class="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2 items-center w-full sm:w-auto mb-4"><div class="flex space-x-2 w-full sm:w-auto"><button onclick="window.filterUnpaidCases('all_unpaid')" class="bg-red-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-red-700 flex items-center shadow-sm ${state.unpaidFilter==='all_unpaid'?'ring-2 ring-red-300':''}"><i data-lucide="alert-circle" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">所有未繳</span></button><button onclick="window.filterUnpaidCases('current_unpaid')" class="bg-amber-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-amber-700 flex items-center shadow-sm ${state.unpaidFilter==='current_unpaid'?'ring-2 ring-amber-300':''}"><i data-lucide="alert-triangle" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">逾期未繳</span></button><button onclick="window.showActiveCases()" class="bg-blue-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-blue-700 flex items-center shadow-sm ${state.activeCasesFilter?'ring-2 ring-blue-300':''}"><i data-lucide="list-checks" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">所有未結案</span></button><button onclick="window.showAllCases()" class="bg-gray-500 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-gray-600 flex items-center shadow-sm ${!state.unpaidFilter&&!state.activeCasesFilter&&!state.statusFilter?'ring-2 ring-gray-300':''}"><i data-lucide="database" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">全部案件</span></button></div><div class="flex space-x-2 items-center w-full sm:w-auto"><div class="relative flex-1 sm:w-64"><i data-lucide="search" class="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4"></i><input type="text" id="searchInput" placeholder="搜尋編號、姓名、方式..." value="${state.searchTerm}" class="w-full pl-10 pr-4 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" oninput="window.handleSearch(this.value)"></div><div class="relative"><select onchange="window.filterByStatus(this.value)" class="appearance-none w-full sm:w-40 bg-white border border-gray-300 rounded-lg py-2 pl-3 pr-8 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"><option value="" ${!state.statusFilter?'selected':''}>狀態篩選...</option><option value="bad_debt" ${state.statusFilter==='bad_debt'?'selected':''}>所有呆帳 (狀態3+4)</option>${state.allowedStatus.includes('2')?`<option value="managed" ${state.statusFilter==='managed'?'selected':''}>所有代管 (狀態2)</option>`:''}<option value="closed" ${state.statusFilter==='closed'?'selected':''}>所有結清 (狀態0)</option><option value="negotiation" ${state.statusFilter==='negotiation'?'selected':''}>所有協商 (狀態5)</option></select><i data-lucide="chevron-down" class="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none"></i></div><input type="file" id="csvFileInput" accept=".csv" class="hidden" onchange="window.handleFileChange(event)" /><button onclick="window.handleFileSelect()" class="bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-700 flex items-center shadow-sm disabled:opacity-50 text-sm" ${state.isImporting?'disabled':''} title="匯入垂直格式報表"><i data-lucide="upload" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">匯入 CSV</span></button><button onclick="window.exportToExcel()" class="bg-teal-600 text-white px-3 py-2 rounded-lg hover:bg-teal-700 flex items-center shadow-sm whitespace-nowrap text-sm" title="匯出垂直格式報表（與匯入格式相同）"><i data-lucide="download" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">匯出 CSV</span></button><button onclick="window.toggleBatchDeleteMode()" class="bg-red-600 text-white px-3 py-2 rounded-lg hover:bg-red-700 flex items-center shadow-sm text-sm ${state.batchDeleteMode?'ring-2 ring-red-300':''}"><i data-lucide="trash-2" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">批次刪除</span></button><button onclick="window.openNewForm()" class="bg-emerald-600 text-white px-3 py-2 rounded-lg hover:bg-emerald-700 flex items-center shadow-sm text-sm"><i data-lucide="plus" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">新增</span></button></div></div>${batchDeletePanel}<div class="bg-white rounded-xl shadow-sm border border-gray-200 flex-1 flex flex-col overflow-hidden relative ${state.batchDeleteMode?'batch-selection-mode':''}"><div class="desktop-table-view flex-1 overflow-auto relative custom-scrollbar"><table class="text-left border-collapse w-max"><thead><tr class="bg-gray-50 border-b border-gray-200">${batchDeleteHeader}${headerHtml}</tr></thead><tbody id="loanListBody" class="divide-y divide-gray-100 text-sm"></tbody></table></div><div id="mobileListContainer" class="mobile-card-view flex-1 overflow-y-auto p-4 custom-scrollbar"></div><div class="p-3 border-t border-gray-100 bg-gray-50 flex flex-col sm:flex-row justify-between items-center"><div class="text-xs sm:text-sm text-gray-500 mb-2 sm:mb-0" id="listTotalInfo"></div></div></div></div>`;
+    return `<div class="flex flex-col h-[calc(100vh-6rem)] animate-fade-in space-y-4"><div class="bg-white border-b border-gray-200 p-4 flex justify-between items-center"><div class="flex items-center"><button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁"><i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i></button><div><h2 class="text-xl font-bold text-gray-800">案件資料列表</h2><p class="text-sm text-gray-500 mt-1"></p></div></div><div class="flex items-center space-x-3">${state.history.length>0?`<button onclick="window.goBack()" class="flex items-center px-4 py-2 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg transition-colors font-medium shadow-sm"><i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁</button>`:''}${renderUserSwitcher()}</div></div><div class="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2 items-center w-full sm:w-auto mb-4"><div class="flex space-x-2 w-full sm:w-auto"><button onclick="window.filterUnpaidCases('all_unpaid')" class="bg-red-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-red-700 flex items-center shadow-sm ${state.unpaidFilter==='all_unpaid'?'ring-2 ring-red-300':''}"><i data-lucide="alert-circle" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">所有未繳</span></button><button onclick="window.filterUnpaidCases('current_unpaid')" class="bg-amber-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-amber-700 flex items-center shadow-sm ${state.unpaidFilter==='current_unpaid'?'ring-2 ring-amber-300':''}"><i data-lucide="alert-triangle" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">逾期未繳</span></button><button onclick="window.showActiveCases()" class="bg-blue-600 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-blue-700 flex items-center shadow-sm ${state.activeCasesFilter?'ring-2 ring-blue-300':''}"><i data-lucide="list-checks" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">所有未結案</span></button><button onclick="window.showAllCases()" class="bg-gray-500 text-white px-3 py-1.5 text-sm rounded-lg hover:bg-gray-600 flex items-center shadow-sm ${!state.unpaidFilter&&!state.activeCasesFilter&&!state.statusFilter?'ring-2 ring-gray-300':''}"><i data-lucide="database" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">全部案件</span></button></div><div class="flex space-x-2 items-center w-full sm:w-auto"><div class="relative flex-1 sm:w-64"><i data-lucide="search" class="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4"></i><input type="text" id="searchInput" placeholder="搜尋編號、姓名、方式..." value="${state.searchTerm}" class="w-full pl-10 pr-4 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" oninput="window.handleSearch(this.value)"></div><div class="relative"><select onchange="window.filterByStatus(this.value)" class="appearance-none w-full sm:w-40 bg-white border border-gray-300 rounded-lg py-2 pl-3 pr-8 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"><option value="" ${!state.statusFilter?'selected':''}>狀態篩選...</option><option value="bad_debt" ${state.statusFilter==='bad_debt'?'selected':''}>所有呆帳 (狀態3+4)</option>${state.allowedStatus.includes('2')?`<option value="managed" ${state.statusFilter==='managed'?'selected':''}>所有代管 (狀態2)</option>`:''}<option value="closed" ${state.statusFilter==='closed'?'selected':''}>所有結清 (狀態0)</option><option value="negotiation" ${state.statusFilter==='negotiation'?'selected':''}>所有協商 (狀態5)</option></select><i data-lucide="chevron-down" class="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none"></i></div><input type="file" id="csvFileInput" accept=".csv" class="hidden" onchange="window.handleFileChange(event)" /><button onclick="window.handleFileSelect()" class="bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-700 flex items-center shadow-sm disabled:opacity-50 text-sm" ${state.isImporting?'disabled':''} title="匯入垂直格式報表"><i data-lucide="upload" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">匯入 CSV</span></button><button onclick="window.exportToExcel()" class="bg-teal-600 text-white px-3 py-2 rounded-lg hover:bg-teal-700 flex items-center shadow-sm whitespace-nowrap text-sm" title="匯出垂直格式報表（與匯入格式相同）"><i data-lucide="download" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">匯出 CSV</span></button>
+<button onclick="window.exportZipWithImages()" class="bg-cyan-600 text-white px-3 py-2 rounded-lg hover:bg-cyan-700 flex items-center shadow-sm whitespace-nowrap text-sm" title="匯出 ZIP 包含 CSV + 案件附件圖片"><i data-lucide="package" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">匯出 ZIP</span></button><button onclick="window.toggleBatchDeleteMode()" class="bg-red-600 text-white px-3 py-2 rounded-lg hover:bg-red-700 flex items-center shadow-sm text-sm ${state.batchDeleteMode?'ring-2 ring-red-300':''}"><i data-lucide="trash-2" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">批次刪除</span></button>
+<button onclick="window.cleanupClosedCaseImages()" class="bg-orange-500 text-white px-3 py-2 rounded-lg hover:bg-orange-600 flex items-center shadow-sm text-sm" title="清除已結案案件的附件圖片以節省空間"><i data-lucide="broom" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">清已結案圖</span></button><button onclick="window.openNewForm()" class="bg-emerald-600 text-white px-3 py-2 rounded-lg hover:bg-emerald-700 flex items-center shadow-sm text-sm"><i data-lucide="plus" class="w-3 h-3 mr-1"></i><span class="hidden sm:inline">新增</span></button></div></div>${batchDeletePanel}<div class="bg-white rounded-xl shadow-sm border border-gray-200 flex-1 flex flex-col overflow-hidden relative ${state.batchDeleteMode?'batch-selection-mode':''}"><div class="desktop-table-view flex-1 overflow-auto relative custom-scrollbar"><table class="text-left border-collapse w-max"><thead><tr class="bg-gray-50 border-b border-gray-200">${batchDeleteHeader}${headerHtml}</tr></thead><tbody id="loanListBody" class="divide-y divide-gray-100 text-sm"></tbody></table></div><div id="mobileListContainer" class="mobile-card-view flex-1 overflow-y-auto p-4 custom-scrollbar"></div><div class="p-3 border-t border-gray-100 bg-gray-50 flex flex-col sm:flex-row justify-between items-center"><div class="text-xs sm:text-sm text-gray-500 mb-2 sm:mb-0" id="listTotalInfo"></div></div></div></div>`;
 }
 function renderUserManagement() {
     return `<div class="max-w-6xl mx-auto animate-fade-in">
@@ -3288,7 +3575,30 @@ function renderForm() {
     // 已還款期數與最後繳款日
     const repaidCount = isEdit ? parseSchedule(state.editingRecord.schedule || '').length : 0;
     const lastPayDate = isEdit ? getLastRepaymentDateStr(state.editingRecord) : '';
-    return `<div class="max-w-5xl mx-auto bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden animate-fade-in flex flex-col h-[calc(100vh-6rem)]"><div class="bg-white border-b border-gray-200 p-4 flex justify-between items-center"><div class="flex items-center"><button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁"><i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i></button><div><h2 class="text-xl font-bold text-gray-800">${isEdit?'編輯案件':'新增案件'}</h2><p class="text-sm text-gray-500 mt-1">填寫或修改案件資訊</p></div></div><div class="flex items-center space-x-3">${state.history.length>0?`<button onclick="window.goBack()" class="flex items-center px-4 py-2 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg transition-colors font-medium shadow-sm"><i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁</button>`:''}${renderUserSwitcher()}</div></div><div class="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-sm flex-1 overflow-y-auto custom-scrollbar"><div class="lg:col-span-4 bg-gray-50 p-3 rounded-lg border border-gray-200"><h4 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 border-b border-gray-200 pb-1">基本與聯絡資料</h4><div class="grid grid-cols-2 md:grid-cols-4 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">借款人</label><input type="text" id="input_borrower" value="${formData.borrower}" oninput="window.updateFormData('borrower', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">身分證字號</label><input type="text" id="input_idNumber" value="${formData.idNumber}" oninput="window.updateFormData('idNumber', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">工作</label><input type="text" id="input_job" value="${formData.job}" oninput="window.updateFormData('job', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">經辦人</label><input type="text" id="input_agent" value="${formData.agent}" oninput="window.updateFormData('agent', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div class="md:col-span-2"><label class="block text-[10px] text-gray-500 mb-0.5">住址</label><input type="text" id="input_address" value="${formData.address}" oninput="window.updateFormData('address', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">電話</label><input type="text" id="input_telephone" value="${formData.telephone}" oninput="window.updateFormData('telephone', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">手機</label><input type="text" id="input_mobile" value="${formData.mobile}" oninput="window.updateFormData('mobile', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div></div></div><div class="lg:col-span-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3"><div class="lg:col-span-2 bg-blue-50 p-3 rounded-lg border border-blue-100"><h4 class="text-xs font-bold text-blue-800 uppercase tracking-wider mb-2 border-b border-blue-200 pb-1">貸款設定</h4><div class="grid grid-cols-2 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">狀態</label><select onchange="window.updateFormData('status', this.value, true)" class="w-full py-1 px-2 border rounded outline-none bg-white text-sm"><option value="1" ${formData.status=='1'?'selected':''}>1 - 進行中</option>${canUseStatus2?`<option value="2" ${formData.status=='2'?'selected':''}>2 - 代管案件</option>`:''}<option value="3" ${formData.status=='3'?'selected':''}>3 - 呆帳</option><option value="5" ${formData.status=='5'?'selected':''}>5 - 協商中</option><option value="0" ${formData.status=='0'?'selected':''}>0 - 已結案</option><option value="4" ${formData.status=='4'?'selected':''}>4 - 已結案呆帳</option></select></div><div><label class="block text-[10px] text-gray-500 mb-0.5">方式</label><select onchange="window.updateFormData('method', this.value, true)" class="w-full py-1 px-2 border rounded outline-none bg-white text-sm" ${formData.status==='5'?'disabled':''}><option value="叨簿子" ${formData.method=='叨簿子'?'selected':''}>叨簿子</option><option value="設定" ${formData.method=='設定'?'selected':''}>設定</option><option value="票貼" ${formData.method=='票貼'?'selected':''}>票貼</option><option value="小額" ${formData.method=='小額'?'selected':''}>小額</option></select></div><div><label class="block text-[10px] text-gray-500 mb-0.5">借款金額(債權) <span class="text-red-500">*</span></label><input type="number" id="input_loanAmount" value="${formData.loanAmount}" oninput="window.updateFormData('loanAmount', this.value); this.classList.remove('border-red-500','ring-2','ring-red-200','bg-red-50')" class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" placeholder="必填" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">放款金額(實際)</label><input type="number" id="input_disbursed" value="${formData.disbursed}" oninput="window.updateFormData('disbursed', this.value)" class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">放款日期</label><input type="date" id="input_date" value="${formData.date}" oninput="window.updateFormData('date', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm" /></div>${(formData.status==='3' || formData.status==='4' || formData.status==='5')?`<div><label class="block text-[10px] text-red-600 mb-0.5 font-bold">呆帳起始月</label><input type="month" id="input_badDebtStartMonth" value="${formData.badDebtStartMonth||''}" oninput="window.updateFormData('badDebtStartMonth', this.value)" class="w-full py-1 px-2 border border-red-300 rounded outline-none font-mono bg-red-50 text-sm" /><p class="text-[9px] text-red-500 mt-1">手動指定呆帳/協商起始月（留空則自動從還款記錄推算）</p></div>`:''}${formData.status==='5'?`<div><label class="block text-[10px] text-purple-600 mb-0.5 font-bold">協議生效月</label><input type="month" id="input_negotiationStartMonth" value="${formData.negotiationStartMonth||''}" oninput="window.updateFormData('negotiationStartMonth', this.value)" class="w-full py-1 px-2 border border-purple-300 rounded outline-none font-mono bg-purple-50 text-sm" /><p class="text-[9px] text-purple-500 mt-1">協議從這月才開始生效。之前月份用一般 P+I 計算，這月之後用協商本金。</p></div>`:''}${formData.status==='3'?`<div><label class="block text-[10px] text-red-600 mb-0.5 font-bold">強制執行狀態</label><select onchange="window.updateFormData('executionStatus', this.value)" class="w-full py-1 px-2 border border-red-300 rounded outline-none font-mono bg-red-50 text-sm"><option value="" ${!formData.executionStatus?'selected':''}>無</option><option value="in_progress" ${formData.executionStatus==='in_progress'?'selected':''}>進行中</option><option value="completed" ${formData.executionStatus==='completed'?'selected':''}>已結案 (排除圖表)</option></select><p class="text-[9px] text-red-500 mt-1">已完成強制執行的案件將不會出現在呆帳趨勢圖中</p></div>`:''}</div></div><div class="lg:col-span-2 bg-emerald-50 p-3 rounded-lg border border-emerald-100"><h4 class="text-xs font-bold text-emerald-800 uppercase tracking-wider mb-2 border-b border-emerald-200 pb-1">還款條件</h4><div class="grid grid-cols-3 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">期數</label><input type="number" id="input_terms" value="${formData.terms}" oninput="window.updateFormData('terms', this.value)" ${formData.status==='5'?'disabled':''} class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">利率(%)</label><input type="text" id="input_interestRate" value="${formData.interestRate}" oninput="window.updateFormData('interestRate', this.value)" ${formData.status==='5'?'disabled':''} class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">每期還款日</label><input type="text" id="input_repayDay" value="${formData.repayDay}" oninput="window.updateFormData('repayDay', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm" /></div>${formData.status==='2'?`<div class="col-span-3 border-t border-emerald-200 my-1"></div><div><label class="block text-[10px] text-blue-600 mb-0.5">借款利率 (%)</label><input type="text" id="input_specialRate" value="${formData.specialRate}" oninput="window.updateFormData('specialRate', this.value)" class="w-full py-1 px-2 border border-blue-300 rounded font-mono bg-white text-sm" placeholder="例如: 0.5"></div><div><label class="block text-[10px] text-blue-600 mb-0.5">應付 (給委託人)</label><input type="text" id="input_expectedPayment" value="${formatNumber(formData.expectedPayment||0)}" readonly class="w-full py-1 px-2 border border-blue-300 rounded font-mono bg-blue-50 text-blue-800 text-sm" /></div>`:''}${formData.status==='5'?`<div class="col-span-3 border-t border-purple-200 my-1 pt-2"><h4 class="text-xs font-bold text-purple-700 uppercase tracking-wider mb-1">協商還款設定</h4><div class="grid grid-cols-1 gap-3"><div><label class="block text-[10px] text-purple-600 mb-0.5 font-bold">協商本金 (每期還款)</label><input type="number" id="input_negotiationPrincipal" value="${formData.negotiationPrincipal}" oninput="window.updateFormData('negotiationPrincipal', this.value)" class="w-full py-1 px-2 border border-purple-300 rounded outline-none font-mono bg-purple-50 text-purple-800 text-sm" /><p class="text-[9px] text-purple-500 mt-1">協商案件每期固定還款本金，無利息</p></div></div></div>`:`<div class="col-span-3 grid grid-cols-2 gap-3 mt-1"><div><label class="block text-[10px] text-gray-500 mb-0.5 font-bold">每期本金 (合約)</label><input type="number" id="input_principalPerTerm" value="${formData.principalPerTerm}" oninput="window.updateFormData('principalPerTerm', this.value)" class="w-full py-1 px-2 border rounded outline-none font-mono bg-gray-100 text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5 font-bold">${formData.status==='2'?'管理費':'每期利息'} (合約)</label><input type="number" id="input_interestPerTerm" value="${formData.interestPerTerm}" oninput="window.updateFormData('interestPerTerm', this.value)" ${formData.status==='2'?'readonly':''} class="w-full py-1 px-2 border rounded outline-none font-mono ${formData.status==='2'?'bg-blue-50 text-blue-800':'bg-gray-100'} text-sm" /></div></div>`}${isEdit?`<div class="col-span-3 border-t border-orange-200 my-1 pt-1"><h4 class="text-[10px] font-bold text-orange-600 uppercase tracking-wider mb-1">本期調整 (當月實收)</h4><div class="grid grid-cols-2 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">本期本金</label><input type="number" id="input_currentPrincipal" value="${formData.currentPrincipal!==undefined?formData.currentPrincipal:(formData.status==='5'?formData.negotiationPrincipal:formData.principalPerTerm)}" oninput="window.updateFormData('currentPrincipal', this.value)" class="w-full py-1 px-2 border border-orange-300 rounded outline-none font-mono bg-orange-50 text-sm text-gray-700 font-bold" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">本期利息</label><input type="number" id="input_currentInterest" value="${formData.currentInterest!==undefined?formData.currentInterest:(formData.status==='5'?0:formData.interestPerTerm)}" oninput="window.updateFormData('currentInterest', this.value)" class="w-full py-1 px-2 border border-orange-300 rounded outline-none font-mono bg-orange-50 text-sm text-gray-700 font-bold" /></div></div></div>`:''}</div></div><div class="lg:col-span-4"><label class="block text-[10px] text-gray-500 mb-0.5">附註</label><textarea rows="2" id="input_note" oninput="window.updateFormData('note', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm resize-none">${formData.note}</textarea></div>${isEdit?`<div class="lg:col-span-4 bg-yellow-50 p-2 rounded border border-yellow-200 grid grid-cols-4 gap-2"><div><label class="block text-[10px] text-gray-500">欠款</label><span id="display_arrears" class="font-mono font-bold text-red-600">${formatNumber(calc.arrears)}</span></div><div><label class="block text-[10px] text-gray-500">在外本金</label><span id="display_outstanding" class="font-mono font-bold">${formatNumber(calc.outstanding)}</span></div>${formData.status==='5'?`<div><label class="block text-[10px] text-purple-500">協商本金</label><span id="display_negotiation" class="font-mono font-bold text-purple-600">${formatNumber(formData.negotiationPrincipal||0)}</span></div>`:''}<div><label class="block text-[10px] text-gray-500">已還款期數</label><span class="font-mono font-bold text-blue-600 clickable-repaid" onclick="window.openModal('schedule', '${state.editingRecord.id}')">${repaidCount} 期 <i data-lucide="calendar-days" class="w-3 h-3 inline ml-1"></i></span></div>${lastPayDate?`<div class="col-span-1"><label class="block text-[10px] text-gray-500">最後繳款日</label><span class="font-mono font-bold">${lastPayDate}</span></div>`:''}<div class="col-span-1 flex justify-end space-x-2"><button onclick="window.duplicateCase()" class="px-3 py-1 bg-blue-100 text-blue-600 rounded hover:bg-blue-200 text-xs font-bold flex items-center"><i data-lucide="copy" class="w-3 h-3 mr-1"></i>複製案件</button><button onclick="window.handleDelete('${state.editingRecord.id}')" class="px-3 py-1 bg-red-100 text-red-600 rounded hover:bg-red-200 text-xs font-bold flex items-center"><i data-lucide="trash-2" class="w-3 h-3 mr-1"></i>刪除案件</button></div></div>`:''}</div><div class="bg-white px-6 py-4 w-full flex justify-end items-center gap-6 border-t border-gray-100 shrink-0 mt-auto"><button onclick="window.setActiveTab('list')" class="text-gray-500 hover:text-gray-800 text-sm font-medium transition-colors">取消</button><button onclick="window.handleSaveForm()" class="px-6 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 shadow-sm flex items-center font-bold text-sm transition-transform active:scale-95"><i data-lucide="save" class="w-4 h-4 mr-2"></i>儲存資料</button></div></div>`;
+    return `<div class="max-w-5xl mx-auto bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden animate-fade-in flex flex-col h-[calc(100vh-6rem)]"><div class="bg-white border-b border-gray-200 p-4 flex justify-between items-center"><div class="flex items-center"><button onclick="window.goBack()" class="mr-3 p-2 rounded-lg hover:bg-gray-200 transition-colors" title="回到上一頁"><i data-lucide="arrow-left" class="w-5 h-5 text-gray-600"></i></button><div><h2 class="text-xl font-bold text-gray-800">${isEdit?'編輯案件':'新增案件'}</h2><p class="text-sm text-gray-500 mt-1">填寫或修改案件資訊</p></div></div><div class="flex items-center space-x-3">${state.history.length>0?`<button onclick="window.goBack()" class="flex items-center px-4 py-2 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-lg transition-colors font-medium shadow-sm"><i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>回上一頁</button>`:''}${renderUserSwitcher()}</div></div><div class="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-sm flex-1 overflow-y-auto custom-scrollbar"><div class="lg:col-span-4 bg-gray-50 p-3 rounded-lg border border-gray-200"><h4 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 border-b border-gray-200 pb-1">基本與聯絡資料</h4><div class="grid grid-cols-2 md:grid-cols-4 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">借款人</label><input type="text" id="input_borrower" value="${formData.borrower}" oninput="window.updateFormData('borrower', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">身分證字號</label><input type="text" id="input_idNumber" value="${formData.idNumber}" oninput="window.updateFormData('idNumber', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">工作</label><input type="text" id="input_job" value="${formData.job}" oninput="window.updateFormData('job', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">經辦人</label><input type="text" id="input_agent" value="${formData.agent}" oninput="window.updateFormData('agent', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div class="md:col-span-2"><label class="block text-[10px] text-gray-500 mb-0.5">住址</label><input type="text" id="input_address" value="${formData.address}" oninput="window.updateFormData('address', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">電話</label><input type="text" id="input_telephone" value="${formData.telephone}" oninput="window.updateFormData('telephone', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">手機</label><input type="text" id="input_mobile" value="${formData.mobile}" oninput="window.updateFormData('mobile', this.value)" class="w-full py-1 px-2 border rounded focus:ring-1 focus:ring-emerald-500 outline-none text-sm" /></div></div></div><div class="lg:col-span-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3"><div class="lg:col-span-2 bg-blue-50 p-3 rounded-lg border border-blue-100"><h4 class="text-xs font-bold text-blue-800 uppercase tracking-wider mb-2 border-b border-blue-200 pb-1">貸款設定</h4><div class="grid grid-cols-2 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">狀態</label><select onchange="window.updateFormData('status', this.value, true)" class="w-full py-1 px-2 border rounded outline-none bg-white text-sm"><option value="1" ${formData.status=='1'?'selected':''}>1 - 進行中</option>${canUseStatus2?`<option value="2" ${formData.status=='2'?'selected':''}>2 - 代管案件</option>`:''}<option value="3" ${formData.status=='3'?'selected':''}>3 - 呆帳</option><option value="5" ${formData.status=='5'?'selected':''}>5 - 協商中</option><option value="0" ${formData.status=='0'?'selected':''}>0 - 已結案</option><option value="4" ${formData.status=='4'?'selected':''}>4 - 已結案呆帳</option></select></div><div><label class="block text-[10px] text-gray-500 mb-0.5">方式</label><select onchange="window.updateFormData('method', this.value, true)" class="w-full py-1 px-2 border rounded outline-none bg-white text-sm" ${formData.status==='5'?'disabled':''}><option value="叨簿子" ${formData.method=='叨簿子'?'selected':''}>叨簿子</option><option value="設定" ${formData.method=='設定'?'selected':''}>設定</option><option value="票貼" ${formData.method=='票貼'?'selected':''}>票貼</option><option value="小額" ${formData.method=='小額'?'selected':''}>小額</option></select></div><div><label class="block text-[10px] text-gray-500 mb-0.5">借款金額(債權) <span class="text-red-500">*</span></label><input type="number" id="input_loanAmount" value="${formData.loanAmount}" oninput="window.updateFormData('loanAmount', this.value); this.classList.remove('border-red-500','ring-2','ring-red-200','bg-red-50')" class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" placeholder="必填" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">放款金額(實際)</label><input type="number" id="input_disbursed" value="${formData.disbursed}" oninput="window.updateFormData('disbursed', this.value)" class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">放款日期</label><input type="date" id="input_date" value="${formData.date}" oninput="window.updateFormData('date', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm" /></div>${(formData.status==='3' || formData.status==='4' || formData.status==='5')?`<div><label class="block text-[10px] text-red-600 mb-0.5 font-bold">呆帳起始月</label><input type="month" id="input_badDebtStartMonth" value="${formData.badDebtStartMonth||''}" oninput="window.updateFormData('badDebtStartMonth', this.value)" class="w-full py-1 px-2 border border-red-300 rounded outline-none font-mono bg-red-50 text-sm" /><p class="text-[9px] text-red-500 mt-1">手動指定呆帳/協商起始月（留空則自動從還款記錄推算）</p></div>`:''}${formData.status==='5'?`<div><label class="block text-[10px] text-purple-600 mb-0.5 font-bold">協議生效月</label><input type="month" id="input_negotiationStartMonth" value="${formData.negotiationStartMonth||''}" oninput="window.updateFormData('negotiationStartMonth', this.value)" class="w-full py-1 px-2 border border-purple-300 rounded outline-none font-mono bg-purple-50 text-sm" /><p class="text-[9px] text-purple-500 mt-1">協議從這月才開始生效。之前月份用一般 P+I 計算，這月之後用協商本金。</p></div>`:''}${formData.status==='3'?`<div><label class="block text-[10px] text-red-600 mb-0.5 font-bold">強制執行狀態</label><select onchange="window.updateFormData('executionStatus', this.value)" class="w-full py-1 px-2 border border-red-300 rounded outline-none font-mono bg-red-50 text-sm"><option value="" ${!formData.executionStatus?'selected':''}>無</option><option value="in_progress" ${formData.executionStatus==='in_progress'?'selected':''}>進行中</option><option value="completed" ${formData.executionStatus==='completed'?'selected':''}>已結案 (排除圖表)</option></select><p class="text-[9px] text-red-500 mt-1">已完成強制執行的案件將不會出現在呆帳趨勢圖中</p></div>`:''}</div></div><div class="lg:col-span-2 bg-emerald-50 p-3 rounded-lg border border-emerald-100"><h4 class="text-xs font-bold text-emerald-800 uppercase tracking-wider mb-2 border-b border-emerald-200 pb-1">還款條件</h4><div class="grid grid-cols-3 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">期數</label><input type="number" id="input_terms" value="${formData.terms}" oninput="window.updateFormData('terms', this.value)" ${formData.status==='5'?'disabled':''} class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">利率(%)</label><input type="text" id="input_interestRate" value="${formData.interestRate}" oninput="window.updateFormData('interestRate', this.value)" ${formData.status==='5'?'disabled':''} class="w-full py-1 px-2 border rounded outline-none font-mono text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">每期還款日</label><input type="text" id="input_repayDay" value="${formData.repayDay}" oninput="window.updateFormData('repayDay', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm" /></div>${formData.status==='2'?`<div class="col-span-3 border-t border-emerald-200 my-1"></div><div><label class="block text-[10px] text-blue-600 mb-0.5">借款利率 (%)</label><input type="text" id="input_specialRate" value="${formData.specialRate}" oninput="window.updateFormData('specialRate', this.value)" class="w-full py-1 px-2 border border-blue-300 rounded font-mono bg-white text-sm" placeholder="例如: 0.5"></div><div><label class="block text-[10px] text-blue-600 mb-0.5">應付 (給委託人)</label><input type="text" id="input_expectedPayment" value="${formatNumber(formData.expectedPayment||0)}" readonly class="w-full py-1 px-2 border border-blue-300 rounded font-mono bg-blue-50 text-blue-800 text-sm" /></div>`:''}${formData.status==='5'?`<div class="col-span-3 border-t border-purple-200 my-1 pt-2"><h4 class="text-xs font-bold text-purple-700 uppercase tracking-wider mb-1">協商還款設定</h4><div class="grid grid-cols-1 gap-3"><div><label class="block text-[10px] text-purple-600 mb-0.5 font-bold">協商本金 (每期還款)</label><input type="number" id="input_negotiationPrincipal" value="${formData.negotiationPrincipal}" oninput="window.updateFormData('negotiationPrincipal', this.value)" class="w-full py-1 px-2 border border-purple-300 rounded outline-none font-mono bg-purple-50 text-purple-800 text-sm" /><p class="text-[9px] text-purple-500 mt-1">協商案件每期固定還款本金，無利息</p></div></div></div>`:`<div class="col-span-3 grid grid-cols-2 gap-3 mt-1"><div><label class="block text-[10px] text-gray-500 mb-0.5 font-bold">每期本金 (合約)</label><input type="number" id="input_principalPerTerm" value="${formData.principalPerTerm}" oninput="window.updateFormData('principalPerTerm', this.value)" class="w-full py-1 px-2 border rounded outline-none font-mono bg-gray-100 text-sm" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5 font-bold">${formData.status==='2'?'管理費':'每期利息'} (合約)</label><input type="number" id="input_interestPerTerm" value="${formData.interestPerTerm}" oninput="window.updateFormData('interestPerTerm', this.value)" ${formData.status==='2'?'readonly':''} class="w-full py-1 px-2 border rounded outline-none font-mono ${formData.status==='2'?'bg-blue-50 text-blue-800':'bg-gray-100'} text-sm" /></div></div>`}${isEdit?`<div class="col-span-3 border-t border-orange-200 my-1 pt-1"><h4 class="text-[10px] font-bold text-orange-600 uppercase tracking-wider mb-1">本期調整 (當月實收)</h4><div class="grid grid-cols-2 gap-3"><div><label class="block text-[10px] text-gray-500 mb-0.5">本期本金</label><input type="number" id="input_currentPrincipal" value="${formData.currentPrincipal!==undefined?formData.currentPrincipal:(formData.status==='5'?formData.negotiationPrincipal:formData.principalPerTerm)}" oninput="window.updateFormData('currentPrincipal', this.value)" class="w-full py-1 px-2 border border-orange-300 rounded outline-none font-mono bg-orange-50 text-sm text-gray-700 font-bold" /></div><div><label class="block text-[10px] text-gray-500 mb-0.5">本期利息</label><input type="number" id="input_currentInterest" value="${formData.currentInterest!==undefined?formData.currentInterest:(formData.status==='5'?0:formData.interestPerTerm)}" oninput="window.updateFormData('currentInterest', this.value)" class="w-full py-1 px-2 border border-orange-300 rounded outline-none font-mono bg-orange-50 text-sm text-gray-700 font-bold" /></div></div></div>`:''}</div></div><div class="lg:col-span-4"><label class="block text-[10px] text-gray-500 mb-0.5">附註</label><textarea rows="2" id="input_note" oninput="window.updateFormData('note', this.value)" class="w-full py-1 px-2 border rounded outline-none text-sm resize-none">${formData.note}</textarea></div>
+<div class="lg:col-span-4 bg-indigo-50 p-3 rounded-lg border border-indigo-100">
+    <h4 class="text-xs font-bold text-indigo-800 uppercase tracking-wider mb-2 border-b border-indigo-200 pb-1 flex items-center justify-between">
+        <span><i data-lucide="paperclip" class="w-3 h-3 inline mr-1"></i>附件圖片 (身分證/借據/資料表等)</span>
+        <span class="text-[10px] text-indigo-600 font-normal">${(formData.caseImages||[]).length}/${MAX_IMAGES} 張 · ${((formData.caseImages||[]).reduce((s,i)=>s+(i.size||0),0)/1024).toFixed(0)}/${(MAX_TOTAL_SIZE/1024).toFixed(0)}KB</span>
+    </h4>
+    <div class="mb-2">
+        <label class="cursor-pointer inline-flex items-center px-3 py-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 transition-colors text-xs font-medium">
+            <i data-lucide="upload" class="w-3 h-3 mr-1"></i>選擇圖片上傳 (手機可用相機拍照)
+            <input type="file" accept="image/*" multiple onchange="window.handleCaseImageUpload(this)" class="hidden" />
+        </label>
+        <span class="ml-2 text-[10px] text-gray-500">自動壓縮 1280px, 單檔 < 200KB</span>
+    </div>
+    ${(formData.caseImages && formData.caseImages.length > 0) ? `
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
+            ${(formData.caseImages||[]).map((img, idx) => `
+            <div class="relative group border border-gray-200 rounded-lg overflow-hidden bg-white">
+                <img src="${img.dataUrl}" alt="${img.name}" class="w-full h-24 object-cover cursor-pointer hover:opacity-80 transition-opacity" onclick="window.viewCaseImage(${idx})" />
+                <div class="absolute inset-x-0 bottom-0 bg-black/70 text-white text-[9px] p-1 truncate">${img.name}</div>
+                <button type="button" onclick="event.stopPropagation(); window.removeCaseImage(${idx})" class="absolute top-1 right-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-opacity" title="刪除">×</button>
+            </div>
+            `).join('')}
+    </div>` : '<div class="text-[10px] text-gray-400 italic mt-1">尚未上傳附件圖片</div>'}
+</div>${isEdit?`<div class="lg:col-span-4 bg-yellow-50 p-2 rounded border border-yellow-200 grid grid-cols-4 gap-2"><div><label class="block text-[10px] text-gray-500">欠款</label><span id="display_arrears" class="font-mono font-bold text-red-600">${formatNumber(calc.arrears)}</span></div><div><label class="block text-[10px] text-gray-500">在外本金</label><span id="display_outstanding" class="font-mono font-bold">${formatNumber(calc.outstanding)}</span></div>${formData.status==='5'?`<div><label class="block text-[10px] text-purple-500">協商本金</label><span id="display_negotiation" class="font-mono font-bold text-purple-600">${formatNumber(formData.negotiationPrincipal||0)}</span></div>`:''}<div><label class="block text-[10px] text-gray-500">已還款期數</label><span class="font-mono font-bold text-blue-600 clickable-repaid" onclick="window.openModal('schedule', '${state.editingRecord.id}')">${repaidCount} 期 <i data-lucide="calendar-days" class="w-3 h-3 inline ml-1"></i></span></div>${lastPayDate?`<div class="col-span-1"><label class="block text-[10px] text-gray-500">最後繳款日</label><span class="font-mono font-bold">${lastPayDate}</span></div>`:''}<div class="col-span-1 flex justify-end space-x-2"><button onclick="window.duplicateCase()" class="px-3 py-1 bg-blue-100 text-blue-600 rounded hover:bg-blue-200 text-xs font-bold flex items-center"><i data-lucide="copy" class="w-3 h-3 mr-1"></i>複製案件</button><button onclick="window.handleDelete('${state.editingRecord.id}')" class="px-3 py-1 bg-red-100 text-red-600 rounded hover:bg-red-200 text-xs font-bold flex items-center"><i data-lucide="trash-2" class="w-3 h-3 mr-1"></i>刪除案件</button></div></div>`:''}</div><div class="bg-white px-6 py-4 w-full flex justify-end items-center gap-6 border-t border-gray-100 shrink-0 mt-auto"><button onclick="window.setActiveTab('list')" class="text-gray-500 hover:text-gray-800 text-sm font-medium transition-colors">取消</button><button onclick="window.handleSaveForm()" class="px-6 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 shadow-sm flex items-center font-bold text-sm transition-transform active:scale-95"><i data-lucide="save" class="w-4 h-4 mr-2"></i>儲存資料</button></div></div>`;
 }
 function renderRepayment() {
     let repaymentCases = state.records.filter(r => {
@@ -3712,6 +4022,8 @@ if (firebaseAvailable && !state.isDemoMode) {
                     const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     docs.sort((a,b) => { const da = a.date?new Date(a.date.replace(/\//g,'-')):new Date('9999-12-31'); const db = b.date?new Date(b.date.replace(/\//g,'-')):new Date('9999-12-31'); return da-db; });
                     updateState({ records: docs });
+                    // ★ 自動清理結清 >6 月的附件圖片 (節省儲存空間)
+                    setTimeout(() => window.autoCleanupOldImages(), 2000);
                 });
                 state.isLoadingListener = true;
             }
